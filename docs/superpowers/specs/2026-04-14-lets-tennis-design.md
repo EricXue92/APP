@@ -252,15 +252,17 @@
 ### 12.1 系统架构
 
 ```
-iOS App (SwiftUI) ←→ FastAPI Backend (Python) ←→ PostgreSQL + Redis
-                                                    ↕
-                                              第三方服务
-                                              • Google Maps
-                                              • 和风天气
-                                              • APNs 推送
-                                              • 微信开放平台
-                                              • Google OAuth
-                                              • SMS 短信服务
+iOS App (SwiftUI + SwiftData) ←→ FastAPI Backend (Python) ←→ PostgreSQL + Redis
+                                                               ↕
+                                                         第三方服务
+                                                         • Google Maps
+                                                         • 和风天气
+                                                         • APNs 推送
+                                                         • 微信开放平台
+                                                         • Google OAuth
+                                                         • SMS 短信服务
+                                                         • Claude API (Anthropic)
+                                                         • OpenAI API (GPT)
 ```
 
 ### 12.2 后端模块
@@ -274,10 +276,12 @@ iOS App (SwiftUI) ←→ FastAPI Backend (Python) ←→ PostgreSQL + Redis
 - Credit（信用）：信用分计算、记录
 - Weather（天气）：天气查询、预警
 - Notification（通知）：APNs 推送
+- Assistant（约球助理）：自然语言解析、LLM adapter（Claude/OpenAI）
+- IdealPlayer（理想球友）：达标评估、标记管理
 
 ### 12.3 核心数据模型
 
-- **User** — id, 昵称, 头像, 性别, 城市, NTRP等级, 信用分, 语言偏好, 注册方式
+- **User** — id, 昵称, 头像, 性别, 城市, NTRP等级, 信用分, 语言偏好, 注册方式, is_ideal_player
 - **Booking** — id, 发起人, 类型(单打/双打), 球场, 时间, 水平范围, 性别要求, 费用, 状态
 - **BookingParticipant** — booking_id, user_id, 角色, 状态
 - **MatchPreference** — user_id, 可用时间, 偏好球场, 水平范围, 性别偏好
@@ -296,7 +300,7 @@ iOS App (SwiftUI) ←→ FastAPI Backend (Python) ←→ PostgreSQL + Redis
 - 架构模式：MVVM
 - 网络层：URLSession + async/await
 - WebSocket：URLSessionWebSocketTask
-- 本地存储：SwiftData + Keychain（凭证）
+- 本地存储：SwiftData（离线缓存 + 数据持久化）+ Keychain（凭证）
 - 地图：MapKit + Google Maps SDK
 - 推送：APNs + UserNotifications
 - 图片处理：Kingfisher（缓存 + 加载）
@@ -312,11 +316,171 @@ iOS App (SwiftUI) ←→ FastAPI Backend (Python) ←→ PostgreSQL + Redis
 
 ---
 
-## 13. MVP 范围
+## 13. 约球助理 Agent
+
+### 13.1 概述
+
+App 内集成 AI 约球助理，用户输入一段自然语言（例如："这周末下午在维园想打单打，3.5 左右，AA"），后端调用 LLM 解析意图并返回结构化字段，iOS 端预填发布表单，用户确认后提交。
+
+### 13.2 架构
+
+```
+iOS 输入自然语言 → POST /api/v1/assistant/parse-booking
+                    → LLM Adapter (Claude / OpenAI)
+                    → 结构化结果 + 球场模糊匹配
+                    ← 返回预填字段 JSON
+iOS 展示预填表单 → 用户确认/修改 → 正常走 create_booking 流程
+```
+
+**处理模式：后端解析。** API key 不暴露在客户端，后端可直接查询数据库做球场模糊匹配和用户偏好补全，方便 prompt 版本管理和 A/B 测试。
+
+### 13.3 LLM Adapter
+
+支持 Claude 和 OpenAI 双 provider，通过配置切换：
+
+- `LLM_PROVIDER`：默认 `claude`，可选 `openai`
+- `ANTHROPIC_API_KEY`：Claude API 密钥
+- `OPENAI_API_KEY`：OpenAI API 密钥
+
+统一接口：`llm.parse(prompt, schema) -> dict`，内部根据 provider 调用对应 SDK。
+
+### 13.4 解析策略
+
+使用 structured output / tool use 让 LLM 返回固定 JSON schema：
+
+```json
+{
+  "match_type": "singles | doubles | null",
+  "play_date": "YYYY-MM-DD | null",
+  "start_time": "HH:MM | null",
+  "end_time": "HH:MM | null",
+  "court_keyword": "用户提及的球场关键词 | null",
+  "min_ntrp": "3.0 | null",
+  "max_ntrp": "4.0 | null",
+  "gender_requirement": "male_only | female_only | any | null",
+  "cost_description": "AA | 免费 | null"
+}
+```
+
+- 未识别的字段返回 `null`，前端对应留空让用户手动填
+- `court_keyword` 由后端在 Court 表中做名称模糊匹配，返回匹配到的 court_id 和球场名，未匹配到则返回 null
+
+### 13.5 后端新增模块
+
+- `app/services/llm.py` — LLM adapter 层，统一接口
+- `app/services/assistant.py` — 约球助理核心逻辑：构建 prompt、调用 LLM、解析响应、球场模糊匹配
+- `app/routers/assistant.py` — `POST /api/v1/assistant/parse-booking`
+- `app/schemas/assistant.py` — 请求体（自然语言文本）和响应体（解析出的结构化字段）
+
+### 13.6 成本控制
+
+- 配置项 `ASSISTANT_RATE_LIMIT`：每用户每小时调用次数上限
+- 使用 Redis 做限流计数
+- 日志记录每次调用的 token 用量和耗时
+
+### 13.7 对现有代码的影响
+
+- `app/config.py` — 新增 LLM 相关配置项（provider、API keys、rate limit）
+- `app/main.py` — 注册 assistant router
+- **不修改现有 booking 流程**，助理只负责"解析"，最终提交仍走 `create_booking`
+
+---
+
+## 14. SwiftData 离线缓存（iOS 技术架构补充）
+
+### 14.1 概述
+
+开发环境为 macOS Tahoe，利用最新 SwiftData 特性进行本地缓存，提升在网球场（信号可能不好）时的使用体验。
+
+### 14.2 缓存策略分层
+
+| 数据类型 | 缓存策略 | 理由 |
+|---------|---------|------|
+| 我的约球列表 | SwiftData 持久化，每次拉取时更新 | 到球场后需要看约球详情、对手信息 |
+| 约球详情（含参与者） | SwiftData 持久化 | 同上，核心离线场景 |
+| 球场信息 | SwiftData 持久化，长效缓存 | 球场数据变动少 |
+| 聊天消息 | SwiftData 持久化，增量同步 | 离线时可查看历史消息 |
+| 通知列表 | 内存缓存，不持久化 | 非关键离线数据 |
+| 约球列表（广场） | 内存缓存 + 短 TTL | 实时性要求高，缓存价值低 |
+
+### 14.3 同步机制
+
+- **Server wins：** 网络恢复时自动拉取最新数据，以服务端为准
+- **离线写队列：** 离线期间的写操作（如发消息）排队，网络恢复后按序提交
+- **单一数据源：** SwiftData 的 `ModelContainer` 作为单一数据源，ViewModel 从 SwiftData 读取而非直接持有网络响应
+
+### 14.4 对后端的影响
+
+**无。** 现有 API 的分页和筛选接口已足够支持增量拉取，不需要后端改动。
+
+---
+
+## 15. 理想球友机制
+
+### 15.1 概述
+
+对"高赴约率、高评价、从未违规"的用户标记为"理想球友"，在智能匹配和约球列表中给予更高曝光权重，形成正向社交循环。
+
+### 15.2 达标条件
+
+**以下四个条件全部满足时，标记为理想球友：**
+
+| 条件 | 判定方式 |
+|------|---------|
+| 信用分 ≥ 90 | `user.credit_score >= 90` |
+| 从未违规取消 | `user.cancel_count == 0` |
+| 完成约球 ≥ 10 场 | 统计 BookingParticipant（status=accepted）关联的已完成 Booking 数量 |
+| 平均评价 ≥ 4.0 | 收到的 Review 三维评分（skill, punctuality, sportsmanship）均分 |
+
+### 15.3 数据模型变更
+
+- `User` 表新增 `is_ideal_player: bool`，默认 `False`
+- 不新增单独的表，直接在 User 上标记
+- 需要一条 Alembic migration
+
+### 15.4 评估触发时机（事件驱动）
+
+| 触发事件 | 触发点 | 原因 |
+|---------|--------|------|
+| 约球完成 | `services/booking.py → complete_booking()` | 场次 +1，信用分变动 |
+| 收到新评价 | `services/review.py → create_review()` | 均分可能变化 |
+| 信用分变动 | `services/credit.py → apply_credit_change()` | 可能跌破 90 或 cancel_count 变化 |
+
+### 15.5 新增模块
+
+- `app/services/ideal_player.py` — `evaluate_ideal_status(session, user_id) -> bool`，查询四个条件，更新 `user.is_ideal_player`
+
+### 15.6 匹配与展示
+
+- **约球列表排序：** 理想球友发布的约球帖优先展示（`ORDER BY is_ideal_player DESC, play_date, start_time`）
+- **智能匹配加权：** 理想球友在匹配权重中获得额外加成
+- **个人主页：** 展示"理想球友"徽章（前端根据 `is_ideal_player` 字段渲染）
+
+### 15.7 降级规则
+
+任一条件不满足时自动移除标记。例如：用户取消一次约球后 `cancel_count` 变为 1，下次评估时 `is_ideal_player` 设为 `False`。
+
+### 15.8 对现有代码的影响
+
+- `models/user.py` — 新增 `is_ideal_player` 字段
+- `services/credit.py` — `apply_credit_change()` 末尾调用评估
+- `services/review.py` — `create_review()` 末尾调用评估
+- `services/booking.py` — `complete_booking()` 末尾调用评估
+- `routers/bookings.py` / `schemas/` — 响应中暴露 `is_ideal_player`
+- Alembic migration 新增字段
+
+---
+
+## 16. MVP 范围
 
 **首期上线城市：** 香港
 
 **包含功能：** 以上所有功能（支付仅做展示，预留接口）
+
+**新增功能：**
+- 约球助理 Agent（自然语言解析，后端 LLM 双 provider）
+- SwiftData 离线缓存（iOS 端，提升弱信号体验）
+- 理想球友机制（高信誉用户标记与优先曝光）
 
 **后续扩展：**
 - 开放更多城市（北京、上海、杭州、广州、深圳、武汉、成都、天津、沈阳等等）
