@@ -395,3 +395,78 @@ async def test_complete_booking_notifies_participants(client: AsyncClient, sessi
     notifs = resp.json()
     complete_notifs = [n for n in notifs if n["type"] == "booking_completed"]
     assert len(complete_notifs) == 1
+
+
+# --- Review notification tests ---
+
+
+@pytest.mark.asyncio
+async def test_review_revealed_notifies_both_users(client: AsyncClient, session: AsyncSession):
+    token1, uid1 = await _register_and_get_token(client, "rnotif_c1")
+    token2, uid2 = await _register_and_get_token(client, "rnotif_j1")
+
+    court_id = await _create_court(client, token1)
+    await _approve_court(session, court_id)
+    booking_id = await _create_booking(client, token1, court_id)
+
+    # Join, accept, confirm
+    await client.post(f"/api/v1/bookings/{booking_id}/join", headers=_auth(token2))
+    await client.patch(
+        f"/api/v1/bookings/{booking_id}/participants/{uid2}",
+        json={"status": "accepted"},
+        headers=_auth(token1),
+    )
+    await client.post(f"/api/v1/bookings/{booking_id}/confirm", headers=_auth(token1))
+
+    # Set play_date to past and complete
+    from app.models.booking import Booking
+    from sqlalchemy import select
+
+    result = await session.execute(select(Booking).where(Booking.id == uuid.UUID(booking_id)))
+    booking = result.scalar_one()
+    booking.play_date = date.today() - timedelta(days=1)
+    booking.start_time = time(10, 0)
+    await session.commit()
+
+    await client.post(f"/api/v1/bookings/{booking_id}/complete", headers=_auth(token1))
+
+    # User1 reviews User2 — no reveal yet
+    await client.post(
+        "/api/v1/reviews",
+        json={
+            "booking_id": booking_id,
+            "reviewee_id": uid2,
+            "skill_rating": 4,
+            "punctuality_rating": 5,
+            "sportsmanship_rating": 4,
+        },
+        headers=_auth(token1),
+    )
+
+    # Check no review_revealed notifications yet
+    resp = await client.get("/api/v1/notifications", headers=_auth(token1))
+    reveal_notifs = [n for n in resp.json() if n["type"] == "review_revealed"]
+    assert len(reveal_notifs) == 0
+
+    # User2 reviews User1 — triggers reveal
+    await client.post(
+        "/api/v1/reviews",
+        json={
+            "booking_id": booking_id,
+            "reviewee_id": uid1,
+            "skill_rating": 3,
+            "punctuality_rating": 4,
+            "sportsmanship_rating": 5,
+        },
+        headers=_auth(token2),
+    )
+
+    # Both users should get review_revealed notification
+    resp = await client.get("/api/v1/notifications", headers=_auth(token1))
+    reveal_notifs = [n for n in resp.json() if n["type"] == "review_revealed"]
+    assert len(reveal_notifs) == 1
+    assert reveal_notifs[0]["target_type"] == "review"
+
+    resp = await client.get("/api/v1/notifications", headers=_auth(token2))
+    reveal_notifs = [n for n in resp.json() if n["type"] == "review_revealed"]
+    assert len(reveal_notifs) == 1

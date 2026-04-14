@@ -9,7 +9,9 @@ from app.i18n import t
 from app.models.booking import Booking, BookingParticipant, BookingStatus, ParticipantStatus
 from app.models.review import Review
 from app.models.user import User
+from app.models.notification import NotificationType
 from app.services.block import is_blocked
+from app.services.notification import create_notification
 
 REVIEW_WINDOW_HOURS = 24
 
@@ -100,12 +102,30 @@ async def submit_review(
         comment=comment,
     )
     session.add(review)
-    await session.commit()
+    await session.flush()
     await session.refresh(review)
 
     # Check if reverse review exists (is_revealed)
     reverse = await get_reverse_review(session, booking_id, reviewer.id, reviewee_id)
     is_revealed = reverse is not None
+
+    if is_revealed:
+        await create_notification(
+            session,
+            recipient_id=reviewer.id,
+            type=NotificationType.REVIEW_REVEALED,
+            target_type="review",
+            target_id=review.id,
+        )
+        await create_notification(
+            session,
+            recipient_id=reviewee_id,
+            type=NotificationType.REVIEW_REVEALED,
+            target_type="review",
+            target_id=reverse.id,
+        )
+
+    await session.commit()
 
     return review, is_revealed
 
