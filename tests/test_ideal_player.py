@@ -222,3 +222,21 @@ async def test_no_change_no_notification(session: AsyncSession):
         select(Notification).where(Notification.recipient_id == user.id)
     )).scalars().all()
     assert len(notifs) == 0
+
+
+from app.models.credit import CreditReason
+from app.services.credit import apply_credit_change
+
+
+@pytest.mark.asyncio
+async def test_credit_change_triggers_evaluation(session: AsyncSession):
+    """apply_credit_change should trigger ideal player evaluation."""
+    user = await _create_user(session, "credit_trigger", credit_score=90)
+    await _seed_completed_bookings(session, user.id, 10)
+    await _seed_reviews(session, user.id, [(5, 5, 5)] * 3)
+
+    # Attend a booking — credit goes to 95, all conditions met
+    await apply_credit_change(session, user, CreditReason.ATTENDED)
+
+    await session.refresh(user)
+    assert user.is_ideal_player is True

@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.credit import CreditLog, CreditReason
 from app.models.user import User
+from app.services.ideal_player import evaluate_ideal_status
 
 _DELTAS = {
     CreditReason.ATTENDED: 5,
@@ -44,6 +45,7 @@ async def apply_credit_change(session: AsyncSession, user: User, reason: CreditR
         description=description,
     )
     session.add(log)
+    await evaluate_ideal_status(session, user.id)
     await session.commit()
     await session.refresh(user)
     return user
