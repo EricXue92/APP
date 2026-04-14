@@ -5,5 +5,6 @@ from app.models.booking import Booking, BookingParticipant
 from app.models.review import Review
 from app.models.block import Block
 from app.models.report import Report
+from app.models.follow import Follow
 
-__all__ = ["User", "UserAuth", "CreditLog", "Court", "Booking", "BookingParticipant", "Review", "Block", "Report"]
+__all__ = ["User", "UserAuth", "CreditLog", "Court", "Booking", "BookingParticipant", "Review", "Block", "Report", "Follow"]

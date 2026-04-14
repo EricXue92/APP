@@ -214,6 +214,31 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "zh-Hant": "操作被拒絕",
         "en": "Action not allowed",
     },
+    "follow.cannot_follow_self": {
+        "zh-Hans": "不能关注自己",
+        "zh-Hant": "不能關注自己",
+        "en": "Cannot follow yourself",
+    },
+    "follow.already_following": {
+        "zh-Hans": "已经关注了该用户",
+        "zh-Hant": "已經關注了該用戶",
+        "en": "Already following this user",
+    },
+    "follow.not_found": {
+        "zh-Hans": "未找到关注记录",
+        "zh-Hant": "未找到關注記錄",
+        "en": "Follow not found",
+    },
+    "follow.user_not_found": {
+        "zh-Hans": "用户不存在",
+        "zh-Hant": "用戶不存在",
+        "en": "User not found",
+    },
+    "follow.blocked": {
+        "zh-Hans": "操作被拒绝",
+        "zh-Hant": "操作被拒絕",
+        "en": "Action not allowed",
+    },
 }
 
 

@@ -31,6 +31,10 @@ async def create_block(
     if existing.scalar_one_or_none() is not None:
         raise LookupError(t("block.already_blocked", lang))
 
+    # Remove existing follows between the two users
+    from app.services.follow import remove_follows_between  # deferred to avoid circular import
+    await remove_follows_between(session, blocker_id, blocked_id)
+
     block = Block(blocker_id=blocker_id, blocked_id=blocked_id)
     session.add(block)
 
