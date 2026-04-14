@@ -149,7 +149,17 @@ alembic/
 
 ---
 
-## 8. Testing Plan
+## 8. Future Integration Points (Phase 6+)
+
+### 8.1 理想球友评估触发（理想球友机制依赖）
+
+`services/review.py` 的 `submit_review()` 在 commit 后需调用 `evaluate_ideal_status(session, reviewee_id)`。收到新评价可能改变 reviewee 的平均评分，从而影响理想球友达标状态。
+
+现有的 `get_review_averages()` 函数可直接被理想球友评估服务复用，无需重写评分计算逻辑。
+
+---
+
+## 9. Testing Plan
 
 - **Submit review:** success, booking not completed → rejected, non-participant → rejected, self-review → rejected, window expired → rejected, duplicate → rejected, invalid rating → rejected
 - **Blind reveal:** single-side submit → not visible to other party; both sides submit → both visible; reviewer always sees own review

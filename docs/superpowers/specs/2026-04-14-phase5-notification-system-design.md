@@ -22,7 +22,7 @@ notifications
 
 - `actor_id`: the user who triggered the event. Nullable for system/moderation notifications. `ON DELETE SET NULL` so notifications survive if the actor account is deleted.
 - `target_type` + `target_id`: polymorphic reference (same pattern as Report model) for iOS client deep-linking.
-- `type` enum values: `booking_joined`, `booking_accepted`, `booking_rejected`, `booking_cancelled`, `booking_confirmed`, `booking_completed`, `new_follower`, `new_mutual`, `review_revealed`, `report_resolved`, `account_warned`, `account_suspended`.
+- `type` enum values: `booking_joined`, `booking_accepted`, `booking_rejected`, `booking_cancelled`, `booking_confirmed`, `booking_completed`, `new_follower`, `new_mutual`, `review_revealed`, `report_resolved`, `account_warned`, `account_suspended`, `ideal_player_gained`, `ideal_player_lost`.
 - No unique constraint — duplicate notifications are acceptable and cheap.
 
 ## Service Layer
@@ -69,6 +69,8 @@ Notifications are created via direct `create_notification()` calls from existing
 | admin resolve report | After resolve | `report_resolved` | reporter | None |
 | admin resolve report (warned) | After warn action | `account_warned` | target user | None |
 | admin resolve report (suspended) | After suspend action | `account_suspended` | target user | None |
+| `ideal_player.evaluate_ideal_status` | Status changed to True | `ideal_player_gained` | target user | None |
+| `ideal_player.evaluate_ideal_status` | Status changed to False | `ideal_player_lost` | target user | None |
 
 No block filtering on notifications — blocks already prevent the underlying actions.
 
@@ -151,3 +153,5 @@ No backend i18n keys needed. The notification `type` enum is sufficient for the 
 - Admin resolves report → reporter gets `report_resolved`
 - Admin warns user → target gets `account_warned`
 - Admin suspends user → target gets `account_suspended`
+- Ideal player status gained → user gets `ideal_player_gained`
+- Ideal player status lost → user gets `ideal_player_lost`

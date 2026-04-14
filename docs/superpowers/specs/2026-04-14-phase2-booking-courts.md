@@ -184,7 +184,21 @@ alembic/
 
 ---
 
-## 7. Testing Plan
+## 7. Future Integration Points (Phase 6+)
+
+以下改动在后续阶段（约球助理 Agent、理想球友机制）实现时执行，此处仅记录需要修改的接入点：
+
+### 7.1 球场模糊搜索（约球助理 Agent 依赖）
+
+`services/court.py` 需新增 `search_courts_by_keyword(session, keyword) -> list[Court]`，用于约球助理 Agent 将用户自然语言中的球场关键词（如"维园"）匹配到数据库中的 Court 记录。使用 `ILIKE` 对 `Court.name` 和 `Court.address` 做模糊匹配，仅返回 `is_approved=True` 的球场。
+
+### 7.2 约球列表理想球友优先排序（理想球友机制依赖）
+
+`services/booking.py` 的 `list_bookings()` 当前排序为 `ORDER BY play_date, start_time`。理想球友机制实现后，需要 JOIN `users` 表获取创建者的 `is_ideal_player` 字段，改为 `ORDER BY is_ideal_player DESC, play_date, start_time`，使理想球友发布的约球帖优先展示。
+
+---
+
+## 8. Testing Plan
 
 - **Court tests:** create court (user-submitted → unapproved), list only approved, filter by city/type, get by id
 - **Booking create tests:** successful create, blocked when credit < 60, court must be approved, play_date in future
