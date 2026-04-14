@@ -96,6 +96,7 @@ async def get_booking_by_id(session: AsyncSession, booking_id: uuid.UUID) -> Boo
             selectinload(Booking.court),
         )
         .where(Booking.id == booking_id)
+        .execution_options(populate_existing=True)
     )
     return result.scalar_one_or_none()
 

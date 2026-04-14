@@ -44,6 +44,7 @@ uv run alembic upgrade head
 - **Credit score system**: `services/credit.py` — bounded [0, 100], first cancellation is warning-only (no deduction), tracked via `cancel_count` on User
 - **Booking system**: `services/booking.py` + `routers/bookings.py` — post-a-match flow with lifecycle (open → confirmed → completed/cancelled). Creator auto-joins as accepted participant. Cancellation penalty calculated automatically from play datetime. Completion awards +5 credit to all accepted participants.
 - **Courts**: `services/court.py` + `routers/courts.py` — hybrid model: admin-seeded courts (approved) + user-submitted courts (unapproved until reviewed). Only approved courts appear in listings and can be used for bookings.
+- **Review system**: `services/review.py` + `routers/reviews.py` — post-booking peer review with double-blind reveal. Three rating dimensions (skill, punctuality, sportsmanship) + optional comment. Reviews only visible to both parties after both submit. 24h window from booking completion. `is_hidden` field reserved for future Report/Block module.
 - **i18n**: `app/i18n.py` — simple dict-based translations, `t(key, lang)` function. Language determined via `Accept-Language` header
 - **Roles**: `UserRole` enum on User model — `user`, `admin`, `superadmin`
 
@@ -69,3 +70,4 @@ uv run alembic upgrade head
 - Pydantic schemas use `model_config = {"from_attributes": True}` for ORM compatibility
 - Booking validation: credit_score ≥ 60 to create, NTRP range check + gender requirement + capacity check to join
 - Booking status state machine: `open → confirmed → completed/cancelled`. Only creator can confirm/complete. Cancel calculates penalty tier automatically (≥24h: -1, 12-24h: -2, <12h: -5, first cancel is always warning-only).
+- Review validation: booking must be completed, both parties must be accepted participants, cannot self-review, 24h window from completion, no duplicates. Blind reveal: review visible to reviewee only after reviewee also submits their review for the same booking.
