@@ -1,0 +1,144 @@
+{
+    "permissions": {
+      "allow": [
+        "Read(*)",
+        "Write(*)",
+        "Edit(*)",
+        "MultiEdit(*)",
+        "Bash(ls:*)",
+        "Bash(find:*)",
+        "Bash(pwd:*)",
+        "Bash(cat:*)",
+        "Bash(head:*)",
+        "Bash(tail:*)",
+        "Bash(wc:*)",
+        "Bash(grep:*)",
+        "Bash(rg:*)",
+        "Bash(mkdir:*)",
+        "Bash(touch:*)",
+        "Bash(mv:*)",
+        "Bash(cp:*)",
+        "Bash(echo:*)",
+        "Bash(sed:*)",
+        "Bash(git:*)",
+        "Bash(npm:*)",
+        "Bash(npx:*)",
+        "Bash(yarn:*)",
+        "Bash(pnpm:*)",
+        "Bash(node:*)",
+        "Bash(python:*)",
+        "Bash(python3:*)",
+        "Bash(uv:*)",
+        "Bash(uvx:*)",
+        "Bash(make:*)",
+        "Bash(ps:*)",
+        "Bash(lsof:*)",
+        "Bash(kill:*)",
+        "Bash(which:*)",
+        "Bash(chmod:*)",
+        "Bash(bun run *)",
+        "Bash(npx vitest *)",
+        "Bash(npx jest *)"
+      ],
+      "deny": [
+        "Bash(rm -rf *)",
+        "Bash(git push --force *)",
+        "Bash(git push -f *)",
+        "Read(.env)",
+        "Read(.env.*)",
+        "Read(**/secrets/**)",
+        "Read(**/.ssh/**)",
+        "Read(**/.aws/**)",
+        "Bash(curl *)",
+        "Bash(wget *)"
+      ]
+    },
+    "spinnerVerbs": {
+      "mode": "replace",
+      "verbs": [
+        "思考",
+        "分析",
+        "处理",
+        "生成",
+        "计算",
+        "研究",
+        "探索",
+        "搜索",
+        "理解",
+        "规划",
+        "编写",
+        "检查",
+        "优化",
+        "推理",
+        "整理"
+      ]
+    },
+  
+    "effortLevel": "high",
+    "env": {
+      "CLAUDE_CODE_SUBAGENT_MODEL": "sonnet"
+    },
+    "hooks": {
+      "PreToolUse": [
+        {
+          "matcher": "Bash",
+          "hooks": [
+            {
+              "type": "command",
+              "command": "INPUT=$(cat); CMD=$(echo \"$INPUT\" | jq -r '.tool_input.command // empty'); if echo \"$CMD\" | grep -qE 'rm -rf /|DROP TABLE|git push --force|git push -f'; then echo \"危险命令已拦截: $CMD\" >&2; exit 2; fi; exit 0"
+            }
+          ]
+        },
+        {
+          "matcher": "Read|Edit|Write",
+          "hooks": [
+            {
+              "type": "command",
+              "command": "INPUT=$(cat); FILE=$(echo \"$INPUT\" | jq -r '.tool_input.file_path // empty'); if echo \"$FILE\" | grep -qE '\\.env$|\\.env\\.|id_rsa|\\.pem$'; then echo \"敏感文件访问已拦截: $FILE\" >&2; exit 2; fi; exit 0"
+            }
+          ]
+        }
+      ],
+      "PostToolUse": [
+        {
+          "matcher": "Edit|Write|MultiEdit",
+          "hooks": [
+            {
+              "type": "command",
+              "command": "FILE=$(jq -r '.tool_input.file_path // empty'); if echo \"$FILE\" | grep -qE '\\.(js|ts|jsx|tsx|json|css|scss|md|html)$'; then npx prettier --write \"$FILE\" 2>/dev/null; fi; exit 0"
+            },
+            {
+              "type": "command",
+              "command": "FILE=$(jq -r '.tool_input.file_path // empty'); if echo \"$FILE\" | grep -qE '\\.(js|ts|jsx|tsx)$'; then npx eslint --fix \"$FILE\" 2>/dev/null; fi; exit 0"
+            },
+            {
+              "type": "command",
+              "command": "FILE=$(jq -r '.tool_input.file_path // empty'); if echo \"$FILE\" | grep -qE '\\.py$'; then command -v ruff &>/dev/null && ruff format \"$FILE\" 2>/dev/null; fi; exit 0"
+            }
+          ]
+        }
+      ],
+      "Stop": [
+        {
+          "hooks": [
+            {
+              "type": "command",
+              "async": true,
+              "command": "osascript -e 'display notification \"任务已完成\" with title \"Claude Code\"' 2>/dev/null; exit 0"
+            }
+          ]
+        }
+      ],
+      "SessionStart": [
+        {
+          "hooks": [
+            {
+              "type": "command",
+              "command": "echo \"{\\\"additionalContext\\\": \\\"当前分支: $(git branch --show-current 2>/dev/null || echo 'non-git'), 状态: $(git status --short 2>/dev/null | head -5 || echo 'N/A')\\\"}\""
+            }
+          ]
+        }
+      ]
+    }
+  }
+  
