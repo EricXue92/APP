@@ -290,6 +290,35 @@ async def test_reviews_hidden_on_block(client: AsyncClient, session: AsyncSessio
 
 
 @pytest.mark.asyncio
+async def test_block_nonexistent_user(client: AsyncClient, session: AsyncSession):
+    token1, uid1 = await _register_and_get_token(client, "blockghost")
+    fake_id = str(uuid.uuid4())
+
+    resp = await client.post("/api/v1/blocks", json={"blocked_id": fake_id}, headers=_auth(token1))
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_suspended_user_cannot_login(client: AsyncClient, session: AsyncSession):
+    """Suspended user should be denied new tokens on login."""
+    from app.models.user import User
+    from sqlalchemy import update
+
+    token1, uid1 = await _register_and_get_token(client, "suspendlogin")
+
+    await session.execute(
+        update(User).where(User.id == uuid.UUID(uid1)).values(is_suspended=True)
+    )
+    await session.commit()
+
+    resp = await client.post(
+        "/api/v1/auth/login/username",
+        json={"username": "suspendlogin", "password": "pass1234"},
+    )
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
 async def test_suspended_user_rejected(client: AsyncClient, session: AsyncSession):
     """Suspended user's token should be rejected on all protected endpoints."""
     from app.models.user import User

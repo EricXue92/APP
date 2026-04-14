@@ -63,6 +63,9 @@ async def login_with_username(body: UsernameLoginRequest, session: DbSession, la
     if not auth.user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=t("auth.account_disabled", lang))
 
+    if auth.user.is_suspended:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=t("auth.account_suspended", lang))
+
     access_token = create_access_token(str(auth.user_id))
     refresh_token = create_refresh_token(str(auth.user_id))
     return TokenResponse(access_token=access_token, refresh_token=refresh_token, user_id=auth.user_id)
@@ -81,6 +84,9 @@ async def login_with_phone(body: PhoneLoginRequest, session: DbSession, lang: La
     if not auth.user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=t("auth.account_disabled", lang))
 
+    if auth.user.is_suspended:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=t("auth.account_suspended", lang))
+
     access_token = create_access_token(str(auth.user_id))
     refresh_token = create_refresh_token(str(auth.user_id))
     return TokenResponse(access_token=access_token, refresh_token=refresh_token, user_id=auth.user_id)
@@ -98,6 +104,9 @@ async def refresh_token(body: RefreshTokenRequest, session: DbSession, lang: Lan
     user = await get_user_by_id(session, uuid.UUID(user_id))
     if user is None or not user.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=t("auth.user_not_found", lang))
+
+    if user.is_suspended:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=t("auth.account_suspended", lang))
 
     access_token = create_access_token(str(user.id))
     new_refresh = create_refresh_token(str(user.id))

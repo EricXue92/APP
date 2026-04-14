@@ -3,6 +3,7 @@ import uuid
 from fastapi import APIRouter, HTTPException, Query, status
 
 from app.dependencies import AdminUser, CurrentUser, DbSession, Lang
+from app.i18n import t
 from app.schemas.report import ReportCreateRequest, ReportDetailResponse, ReportResolveRequest, ReportResponse
 from app.services.report import create_report, get_report_by_id, list_my_reports, list_reports, resolve_report
 
@@ -53,7 +54,7 @@ async def admin_list_reports(
 async def admin_get_report(report_id: str, admin: AdminUser, session: DbSession, lang: Lang):
     report = await get_report_by_id(session, uuid.UUID(report_id))
     if report is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Report not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=t("report.not_found", lang))
     return report
 
 

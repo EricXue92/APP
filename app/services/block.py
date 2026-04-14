@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.i18n import t
 from app.models.block import Block
 from app.models.review import Review
+from app.models.user import User
 
 
 async def create_block(
@@ -17,6 +18,11 @@ async def create_block(
 ) -> Block:
     if blocker_id == blocked_id:
         raise ValueError(t("block.cannot_block_self", lang))
+
+    # Validate blocked user exists
+    result = await session.execute(select(User).where(User.id == blocked_id))
+    if result.scalar_one_or_none() is None:
+        raise ValueError(t("block.user_not_found", lang))
 
     # Check duplicate
     existing = await session.execute(

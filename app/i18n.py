@@ -159,6 +159,11 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "zh-Hant": "未找到封鎖記錄",
         "en": "Block not found",
     },
+    "block.user_not_found": {
+        "zh-Hans": "用户不存在",
+        "zh-Hant": "用戶不存在",
+        "en": "User not found",
+    },
     "report.cannot_report_self": {
         "zh-Hans": "不能举报自己",
         "zh-Hant": "不能檢舉自己",
