@@ -287,3 +287,23 @@ async def test_reviews_hidden_on_block(client: AsyncClient, session: AsyncSessio
     )
     reviews = list(result.scalars().all())
     assert all(r.is_hidden for r in reviews)
+
+
+@pytest.mark.asyncio
+async def test_suspended_user_rejected(client: AsyncClient, session: AsyncSession):
+    """Suspended user's token should be rejected on all protected endpoints."""
+    from app.models.user import User
+    from sqlalchemy import update
+
+    token1, uid1 = await _register_and_get_token(client, "suspended1")
+
+    # Suspend the user directly in DB
+    await session.execute(
+        update(User).where(User.id == uuid.UUID(uid1)).values(is_suspended=True)
+    )
+    await session.commit()
+
+    # Try to access a protected endpoint
+    resp = await client.get("/api/v1/blocks", headers=_auth(token1))
+    assert resp.status_code == 403
+    assert "suspended" in resp.json()["detail"].lower()
