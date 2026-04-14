@@ -144,6 +144,71 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "zh-Hant": "評分必須在 1-5 之間",
         "en": "Rating must be between 1 and 5",
     },
+    "block.cannot_block_self": {
+        "zh-Hans": "不能拉黑自己",
+        "zh-Hant": "不能封鎖自己",
+        "en": "Cannot block yourself",
+    },
+    "block.already_blocked": {
+        "zh-Hans": "已经拉黑了该用户",
+        "zh-Hant": "已經封鎖了該用戶",
+        "en": "User is already blocked",
+    },
+    "block.not_found": {
+        "zh-Hans": "未找到拉黑记录",
+        "zh-Hant": "未找到封鎖記錄",
+        "en": "Block not found",
+    },
+    "report.cannot_report_self": {
+        "zh-Hans": "不能举报自己",
+        "zh-Hant": "不能檢舉自己",
+        "en": "Cannot report yourself",
+    },
+    "report.already_reported": {
+        "zh-Hans": "你已经举报过了",
+        "zh-Hant": "你已經檢舉過了",
+        "en": "You have already reported this",
+    },
+    "report.target_not_found": {
+        "zh-Hans": "举报对象未找到",
+        "zh-Hant": "檢舉對象未找到",
+        "en": "Report target not found",
+    },
+    "report.review_already_hidden": {
+        "zh-Hans": "该评价已被隐藏",
+        "zh-Hant": "該評價已被隱藏",
+        "en": "This review is already hidden",
+    },
+    "report.not_found": {
+        "zh-Hans": "举报未找到",
+        "zh-Hant": "檢舉未找到",
+        "en": "Report not found",
+    },
+    "report.already_resolved": {
+        "zh-Hans": "举报已处理",
+        "zh-Hant": "檢舉已處理",
+        "en": "Report has already been resolved",
+    },
+    "report.invalid_resolution_for_target": {
+        "zh-Hans": "该处理方式不适用于此举报类型",
+        "zh-Hant": "該處理方式不適用於此檢舉類型",
+        "en": "This resolution is not valid for this report type",
+    },
+    "auth.account_suspended": {
+        "zh-Hans": "账号已被停用",
+        "zh-Hant": "帳號已被停用",
+        "en": "Account has been suspended",
+    },
+    "common.admin_required": {
+        "zh-Hans": "需要管理员权限",
+        "zh-Hant": "需要管理員權限",
+        "en": "Admin access required",
+    },
+    "block.user_blocked": {
+        "zh-Hans": "操作被拒绝",
+        "zh-Hant": "操作被拒絕",
+        "en": "Action not allowed",
+    },
 }
 
 
