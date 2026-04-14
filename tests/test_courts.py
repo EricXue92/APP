@@ -141,3 +141,29 @@ async def test_submit_court_requires_auth(client: AsyncClient):
         },
     )
     assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_list_courts_filter_by_type(client: AsyncClient, session: AsyncSession):
+    indoor = Court(
+        name="Indoor Court",
+        address="Indoor addr",
+        city="Hong Kong",
+        court_type=CourtType.INDOOR,
+        is_approved=True,
+    )
+    outdoor = Court(
+        name="Outdoor Court",
+        address="Outdoor addr",
+        city="Hong Kong",
+        court_type=CourtType.OUTDOOR,
+        is_approved=True,
+    )
+    session.add_all([indoor, outdoor])
+    await session.commit()
+
+    resp = await client.get("/api/v1/courts", params={"court_type": "indoor"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) == 1
+    assert data[0]["name"] == "Indoor Court"

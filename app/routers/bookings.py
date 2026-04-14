@@ -192,7 +192,7 @@ async def cancel_existing_booking(booking_id: str, user: CurrentUser, session: D
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=t("booking.already_cancelled", lang))
 
     if booking.status == BookingStatus.COMPLETED:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=t("booking.already_cancelled", lang))
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=t("booking.cannot_complete", lang))
 
     booking = await cancel_booking(session, booking, user)
     booking = await get_booking_by_id(session, booking.id)

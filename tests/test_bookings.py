@@ -457,3 +457,55 @@ async def test_reject_participant(client: AsyncClient, session: AsyncSession):
     assert resp.status_code == 200
     rejected = [p for p in resp.json()["participants"] if p["user_id"] == joiner_id]
     assert rejected[0]["status"] == "rejected"
+
+
+# --- Additional Tests ---
+
+@pytest.mark.asyncio
+async def test_create_booking_past_date_fails(client: AsyncClient, session: AsyncSession):
+    token, _ = await _register_and_get_token(client, "pastdate1")
+    court = await _seed_court(session)
+
+    resp = await client.post(
+        "/api/v1/bookings",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "court_id": str(court.id),
+            "match_type": "singles",
+            "play_date": (date.today() - timedelta(days=1)).isoformat(),
+            "start_time": "10:00:00",
+            "end_time": "12:00:00",
+            "min_ntrp": "3.0",
+            "max_ntrp": "4.0",
+        },
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_participant_cancel_own_participation(client: AsyncClient, session: AsyncSession):
+    """Non-creator participant cancels their own participation — booking stays open."""
+    token1, _ = await _register_and_get_token(client, "host16")
+    token2, _ = await _register_and_get_token(client, "joiner16")
+    court = await _seed_court(session)
+
+    create_resp = await _create_booking(client, token1, str(court.id))
+    booking_id = create_resp.json()["id"]
+
+    # Join and accept
+    await client.post(f"/api/v1/bookings/{booking_id}/join", headers={"Authorization": f"Bearer {token2}"})
+    joiner_id = (await client.get(f"/api/v1/bookings/{booking_id}")).json()["participants"][1]["user_id"]
+    await client.patch(
+        f"/api/v1/bookings/{booking_id}/participants/{joiner_id}",
+        headers={"Authorization": f"Bearer {token1}"},
+        json={"status": "accepted"},
+    )
+
+    # Participant cancels
+    resp = await client.post(f"/api/v1/bookings/{booking_id}/cancel", headers={"Authorization": f"Bearer {token2}"})
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "open"  # booking stays open
+    # Participant's status should be cancelled
+    participants = resp.json()["participants"]
+    joiner_p = [p for p in participants if p["user_id"] == joiner_id]
+    assert joiner_p[0]["status"] == "cancelled"
