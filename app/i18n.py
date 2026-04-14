@@ -114,6 +114,36 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "zh-Hant": "球場尚未審核通過",
         "en": "Court is not yet approved",
     },
+    "review.booking_not_completed": {
+        "zh-Hans": "约球尚未完成",
+        "zh-Hant": "約球尚未完成",
+        "en": "Booking is not completed",
+    },
+    "review.not_participant": {
+        "zh-Hans": "你不是该约球的参与者",
+        "zh-Hant": "你不是該約球的參與者",
+        "en": "You are not a participant in this booking",
+    },
+    "review.cannot_review_self": {
+        "zh-Hans": "不能评价自己",
+        "zh-Hant": "不能評價自己",
+        "en": "Cannot review yourself",
+    },
+    "review.window_expired": {
+        "zh-Hans": "评价时间已过",
+        "zh-Hant": "評價時間已過",
+        "en": "Review window has expired",
+    },
+    "review.already_submitted": {
+        "zh-Hans": "你已经评价过此人",
+        "zh-Hant": "你已經評價過此人",
+        "en": "You have already reviewed this person",
+    },
+    "review.invalid_rating": {
+        "zh-Hans": "评分必须在 1-5 之间",
+        "zh-Hant": "評分必須在 1-5 之間",
+        "en": "Rating must be between 1 and 5",
+    },
 }
 
 
