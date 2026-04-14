@@ -5,9 +5,11 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.i18n import t
+from app.models.notification import NotificationType
 from app.models.report import Report, ReportResolution, ReportStatus, ReportTargetType
 from app.models.review import Review
 from app.models.user import User
+from app.services.notification import create_notification
 
 
 async def create_report(
@@ -139,6 +141,33 @@ async def resolve_report(
     report.resolution = res
     report.resolved_by = admin_id
     report.resolved_at = datetime.now(timezone.utc)
+
+    # Notify reporter that report was resolved
+    await create_notification(
+        session,
+        recipient_id=report.reporter_id,
+        type=NotificationType.REPORT_RESOLVED,
+        target_type="report",
+        target_id=report.id,
+    )
+
+    # Notify target user of moderation action
+    if res == ReportResolution.WARNED:
+        await create_notification(
+            session,
+            recipient_id=report.reported_user_id,
+            type=NotificationType.ACCOUNT_WARNED,
+            target_type="report",
+            target_id=report.id,
+        )
+    elif res == ReportResolution.SUSPENDED:
+        await create_notification(
+            session,
+            recipient_id=report.reported_user_id,
+            type=NotificationType.ACCOUNT_SUSPENDED,
+            target_type="report",
+            target_id=report.id,
+        )
 
     await session.commit()
     await session.refresh(report)

@@ -470,3 +470,126 @@ async def test_review_revealed_notifies_both_users(client: AsyncClient, session:
     resp = await client.get("/api/v1/notifications", headers=_auth(token2))
     reveal_notifs = [n for n in resp.json() if n["type"] == "review_revealed"]
     assert len(reveal_notifs) == 1
+
+
+# --- Report notification tests ---
+
+
+from app.models.user import UserRole
+
+
+async def _make_admin(session: AsyncSession, user_id: str):
+    """Promote a user to admin in the DB."""
+    from app.models.user import User
+    from sqlalchemy import select
+
+    result = await session.execute(select(User).where(User.id == uuid.UUID(user_id)))
+    user = result.scalar_one()
+    user.role = UserRole.ADMIN
+    await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_report_resolved_notifies_reporter(client: AsyncClient, session: AsyncSession):
+    token1, uid1 = await _register_and_get_token(client, "repnotif1")
+    token2, uid2 = await _register_and_get_token(client, "repnotif2")
+    admin_token, admin_id = await _register_and_get_token(client, "repnotif_admin")
+    await _make_admin(session, admin_id)
+
+    # User1 reports User2
+    resp = await client.post(
+        "/api/v1/reports",
+        json={
+            "reported_user_id": uid2,
+            "target_type": "user",
+            "reason": "harassment",
+        },
+        headers=_auth(token1),
+    )
+    report_id = resp.json()["id"]
+
+    # Admin resolves as dismissed
+    await client.patch(
+        f"/api/v1/admin/reports/{report_id}/resolve",
+        json={"resolution": "dismissed"},
+        headers=_auth(admin_token),
+    )
+
+    # Reporter should get report_resolved notification
+    resp = await client.get("/api/v1/notifications", headers=_auth(token1))
+    notifs = resp.json()
+    resolved_notifs = [n for n in notifs if n["type"] == "report_resolved"]
+    assert len(resolved_notifs) == 1
+    assert resolved_notifs[0]["target_type"] == "report"
+    assert resolved_notifs[0]["target_id"] == report_id
+
+
+@pytest.mark.asyncio
+async def test_report_warned_notifies_target(client: AsyncClient, session: AsyncSession):
+    token1, uid1 = await _register_and_get_token(client, "warnnotif1")
+    token2, uid2 = await _register_and_get_token(client, "warnnotif2")
+    admin_token, admin_id = await _register_and_get_token(client, "warnnotif_admin")
+    await _make_admin(session, admin_id)
+
+    resp = await client.post(
+        "/api/v1/reports",
+        json={
+            "reported_user_id": uid2,
+            "target_type": "user",
+            "reason": "harassment",
+        },
+        headers=_auth(token1),
+    )
+    report_id = resp.json()["id"]
+
+    await client.patch(
+        f"/api/v1/admin/reports/{report_id}/resolve",
+        json={"resolution": "warned"},
+        headers=_auth(admin_token),
+    )
+
+    # Reported user should get account_warned notification
+    resp = await client.get("/api/v1/notifications", headers=_auth(token2))
+    notifs = resp.json()
+    warn_notifs = [n for n in notifs if n["type"] == "account_warned"]
+    assert len(warn_notifs) == 1
+    assert warn_notifs[0]["target_type"] == "report"
+
+
+@pytest.mark.asyncio
+async def test_report_suspended_notifies_target(client: AsyncClient, session: AsyncSession):
+    token1, uid1 = await _register_and_get_token(client, "suspnotif1")
+    token2, uid2 = await _register_and_get_token(client, "suspnotif2")
+    admin_token, admin_id = await _register_and_get_token(client, "suspnotif_admin")
+    await _make_admin(session, admin_id)
+
+    resp = await client.post(
+        "/api/v1/reports",
+        json={
+            "reported_user_id": uid2,
+            "target_type": "user",
+            "reason": "harassment",
+        },
+        headers=_auth(token1),
+    )
+    report_id = resp.json()["id"]
+
+    await client.patch(
+        f"/api/v1/admin/reports/{report_id}/resolve",
+        json={"resolution": "suspended"},
+        headers=_auth(admin_token),
+    )
+
+    # Suspended user can't access endpoints, so check DB directly
+    from app.models.notification import Notification, NotificationType
+    from sqlalchemy import select
+
+    result = await session.execute(
+        select(Notification).where(
+            Notification.recipient_id == uuid.UUID(uid2),
+            Notification.type == NotificationType.ACCOUNT_SUSPENDED,
+        )
+    )
+    notif = result.scalar_one_or_none()
+    assert notif is not None
+    assert notif.target_type == "report"
