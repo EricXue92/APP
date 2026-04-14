@@ -69,7 +69,7 @@ async def list_followers(session: AsyncSession, user_id: uuid.UUID) -> list[dict
         select(Follow).where(Follow.followed_id == user_id).order_by(Follow.created_at.desc())
     )
     follows = list(result.scalars().all())
-    return await _attach_mutual(session, follows, direction="follower")
+    return await _attach_mutual(session, follows)
 
 
 async def list_following(session: AsyncSession, user_id: uuid.UUID) -> list[dict]:
@@ -77,7 +77,7 @@ async def list_following(session: AsyncSession, user_id: uuid.UUID) -> list[dict
         select(Follow).where(Follow.follower_id == user_id).order_by(Follow.created_at.desc())
     )
     follows = list(result.scalars().all())
-    return await _attach_mutual(session, follows, direction="following")
+    return await _attach_mutual(session, follows)
 
 
 async def is_mutual(session: AsyncSession, user_a: uuid.UUID, user_b: uuid.UUID) -> bool:
@@ -115,14 +115,11 @@ async def _check_reverse(session: AsyncSession, follower_id: uuid.UUID, followed
     return result.scalar_one_or_none() is not None
 
 
-async def _attach_mutual(session: AsyncSession, follows: list[Follow], direction: str) -> list[dict]:
+async def _attach_mutual(session: AsyncSession, follows: list[Follow]) -> list[dict]:
     """Attach is_mutual to a list of Follow objects."""
     results = []
     for f in follows:
-        if direction == "follower":
-            mutual = await _check_reverse(session, f.followed_id, f.follower_id)
-        else:
-            mutual = await _check_reverse(session, f.follower_id, f.followed_id)
+        mutual = await _check_reverse(session, f.follower_id, f.followed_id)
         results.append(_to_dict(f, mutual))
     return results
 

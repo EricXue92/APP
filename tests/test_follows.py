@@ -62,6 +62,8 @@ async def test_list_followers(client: AsyncClient, session: AsyncSession):
     assert resp.status_code == 200
     data = resp.json()
     assert len(data) == 2
+    # One-way follows — is_mutual must be False
+    assert all(d["is_mutual"] is False for d in data)
 
 
 @pytest.mark.asyncio
