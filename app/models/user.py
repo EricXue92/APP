@@ -14,6 +14,12 @@ class Gender(str, enum.Enum):
     FEMALE = "female"
 
 
+class UserRole(str, enum.Enum):
+    USER = "user"
+    ADMIN = "admin"
+    SUPERADMIN = "superadmin"
+
+
 class AuthProvider(str, enum.Enum):
     PHONE = "phone"
     WECHAT = "wechat"
@@ -36,6 +42,7 @@ class User(Base):
     bio: Mapped[str | None] = mapped_column(Text)
     years_playing: Mapped[int | None] = mapped_column(Integer)
     language: Mapped[str] = mapped_column(String(10), default="zh-Hant")
+    role: Mapped[UserRole] = mapped_column(Enum(UserRole), default=UserRole.USER)
     is_verified: Mapped[bool] = mapped_column(default=False)
     is_active: Mapped[bool] = mapped_column(default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
