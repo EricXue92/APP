@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.database import Base, get_session
 from app.main import create_app
-from app.models import Booking, BookingParticipant, Block, Court, CreditLog, Report, Review, User, UserAuth  # noqa: F401
+from app.models import Booking, BookingParticipant, Block, Court, CreditLog, Follow, Report, Review, User, UserAuth  # noqa: F401
 
 TEST_DATABASE_URL = "postgresql+asyncpg://postgres:postgres@localhost:5432/lets_tennis_test"
 
