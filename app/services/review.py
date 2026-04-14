@@ -8,13 +8,30 @@ from sqlalchemy.orm import selectinload
 from app.i18n import t
 from app.models.booking import Booking, BookingParticipant, BookingStatus, ParticipantStatus
 from app.models.review import Review
+from app.models.user import User
+
+REVIEW_WINDOW_HOURS = 24
+
+
+def _reverse_review_exists_clause():
+    """Correlated EXISTS subquery: does the reverse review exist for a given Review row?"""
+    reverse = Review.__table__.alias("reverse_review")
+    return exists(
+        select(reverse.c.id).where(
+            and_(
+                reverse.c.booking_id == Review.booking_id,
+                reverse.c.reviewer_id == Review.reviewee_id,
+                reverse.c.reviewee_id == Review.reviewer_id,
+            )
+        )
+    )
 
 
 async def submit_review(
     session: AsyncSession,
     *,
     booking_id: uuid.UUID,
-    reviewer: "User",
+    reviewer: User,
     reviewee_id: uuid.UUID,
     skill_rating: int,
     punctuality_rating: int,
@@ -53,7 +70,7 @@ async def submit_review(
     # Within 24h window
     now = datetime.now(timezone.utc)
     window_end = booking.updated_at.replace(tzinfo=timezone.utc) if booking.updated_at.tzinfo is None else booking.updated_at
-    if now > window_end + timedelta(hours=24):
+    if now > window_end + timedelta(hours=REVIEW_WINDOW_HOURS):
         raise ValueError(t("review.window_expired", lang))
 
     # Check duplicate
@@ -110,25 +127,13 @@ async def get_revealed_reviews_for_user(
     user_id: uuid.UUID,
 ) -> list[Review]:
     """Get reviews where user is reviewee, not hidden, and reverse review exists."""
-    reverse = Review.__table__.alias("reverse_review")
-
-    reverse_exists = exists(
-        select(reverse.c.id).where(
-            and_(
-                reverse.c.booking_id == Review.booking_id,
-                reverse.c.reviewer_id == Review.reviewee_id,
-                reverse.c.reviewee_id == Review.reviewer_id,
-            )
-        )
-    )
-
     result = await session.execute(
         select(Review)
         .options(selectinload(Review.reviewer))
         .where(
             Review.reviewee_id == user_id,
             Review.is_hidden == False,  # noqa: E712
-            reverse_exists,
+            _reverse_review_exists_clause(),
         )
         .order_by(Review.created_at.desc())
     )
@@ -140,18 +145,6 @@ async def get_review_averages(
     user_id: uuid.UUID,
 ) -> dict:
     """Return average ratings and count for revealed reviews."""
-    reverse = Review.__table__.alias("reverse_review")
-
-    reverse_exists = exists(
-        select(reverse.c.id).where(
-            and_(
-                reverse.c.booking_id == Review.booking_id,
-                reverse.c.reviewer_id == Review.reviewee_id,
-                reverse.c.reviewee_id == Review.reviewer_id,
-            )
-        )
-    )
-
     result = await session.execute(
         select(
             func.avg(Review.skill_rating),
@@ -161,7 +154,7 @@ async def get_review_averages(
         ).where(
             Review.reviewee_id == user_id,
             Review.is_hidden == False,  # noqa: E712
-            reverse_exists,
+            _reverse_review_exists_clause(),
         )
     )
     row = result.one()
@@ -244,7 +237,7 @@ async def get_pending_reviews(
     for booking in bookings:
         # Check 24h window
         updated = booking.updated_at.replace(tzinfo=timezone.utc) if booking.updated_at.tzinfo is None else booking.updated_at
-        if now > updated + timedelta(hours=24):
+        if now > updated + timedelta(hours=REVIEW_WINDOW_HOURS):
             continue
 
         # Find accepted co-participants not yet reviewed
@@ -253,17 +246,18 @@ async def get_pending_reviews(
             if p.status == ParticipantStatus.ACCEPTED and p.user_id != user_id
         ]
 
-        # Check which ones have already been reviewed
+        # Batch query: which co-participants have already been reviewed?
+        submitted_result = await session.execute(
+            select(Review.reviewee_id).where(
+                Review.booking_id == booking.id,
+                Review.reviewer_id == user_id,
+            )
+        )
+        already_reviewed = set(submitted_result.scalars().all())
+
         reviewees = []
         for p in accepted_participants:
-            existing = await session.execute(
-                select(Review).where(
-                    Review.booking_id == booking.id,
-                    Review.reviewer_id == user_id,
-                    Review.reviewee_id == p.user_id,
-                )
-            )
-            if existing.scalar_one_or_none() is None:
+            if p.user_id not in already_reviewed:
                 reviewees.append({
                     "user_id": str(p.user_id),
                     "nickname": p.user.nickname,
@@ -275,7 +269,7 @@ async def get_pending_reviews(
                 "court_name": booking.court.name,
                 "play_date": booking.play_date.isoformat(),
                 "reviewees": reviewees,
-                "window_closes_at": updated + timedelta(hours=24),
+                "window_closes_at": updated + timedelta(hours=REVIEW_WINDOW_HOURS),
             })
 
     return pending

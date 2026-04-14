@@ -1,8 +1,11 @@
 import uuid
 
 from fastapi import APIRouter, HTTPException, status
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from app.dependencies import CurrentUser, DbSession, Lang
+from app.models.review import Review
 from app.schemas.review import PendingReviewItem, ReviewCreateRequest, ReviewResponse, UserReviewSummary
 from app.services.review import (
     get_booking_reviews_for_user,
@@ -53,10 +56,6 @@ async def create_review(body: ReviewCreateRequest, user: CurrentUser, session: D
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
 
     # Reload review with reviewer relationship
-    from sqlalchemy import select
-    from sqlalchemy.orm import selectinload
-    from app.models.review import Review
-
     result = await session.execute(
         select(Review)
         .options(selectinload(Review.reviewer))
