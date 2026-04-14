@@ -1,4 +1,5 @@
 import uuid
+from datetime import date, time, timedelta
 
 import pytest
 from httpx import AsyncClient
@@ -194,3 +195,203 @@ async def test_mutual_follow_creates_new_mutual_notification(client: AsyncClient
     notifs = resp.json()
     assert len(notifs) == 1
     assert notifs[0]["type"] == "new_follower"
+
+
+# --- Booking notification helpers ---
+
+
+async def _create_court(client: AsyncClient, token: str) -> str:
+    """Create a court and return its id."""
+    resp = await client.post(
+        "/api/v1/courts",
+        json={
+            "name": "Test Court",
+            "address": "123 Test St",
+            "city": "Hong Kong",
+            "court_type": "outdoor",
+        },
+        headers=_auth(token),
+    )
+    return resp.json()["id"]
+
+
+async def _approve_court(session: AsyncSession, court_id: str):
+    """Directly approve a court in the DB for testing."""
+    from app.models.court import Court
+    from sqlalchemy import select
+
+    result = await session.execute(select(Court).where(Court.id == uuid.UUID(court_id)))
+    court = result.scalar_one()
+    court.is_approved = True
+    await session.commit()
+
+
+async def _create_booking(client: AsyncClient, token: str, court_id: str) -> str:
+    """Create a booking and return its id."""
+    tomorrow = (date.today() + timedelta(days=1)).isoformat()
+    resp = await client.post(
+        "/api/v1/bookings",
+        json={
+            "court_id": court_id,
+            "match_type": "singles",
+            "play_date": tomorrow,
+            "start_time": "10:00",
+            "end_time": "12:00",
+            "min_ntrp": "2.0",
+            "max_ntrp": "5.0",
+            "gender_requirement": "any",
+        },
+        headers=_auth(token),
+    )
+    return resp.json()["id"]
+
+
+@pytest.mark.asyncio
+async def test_join_booking_notifies_creator(client: AsyncClient, session: AsyncSession):
+    token1, uid1 = await _register_and_get_token(client, "bnotif_c1")
+    token2, uid2 = await _register_and_get_token(client, "bnotif_j1")
+
+    court_id = await _create_court(client, token1)
+    await _approve_court(session, court_id)
+    booking_id = await _create_booking(client, token1, court_id)
+
+    await client.post(f"/api/v1/bookings/{booking_id}/join", headers=_auth(token2))
+
+    resp = await client.get("/api/v1/notifications", headers=_auth(token1))
+    notifs = resp.json()
+    booking_notifs = [n for n in notifs if n["type"] == "booking_joined"]
+    assert len(booking_notifs) == 1
+    assert booking_notifs[0]["actor_id"] == uid2
+    assert booking_notifs[0]["target_type"] == "booking"
+    assert booking_notifs[0]["target_id"] == booking_id
+
+
+@pytest.mark.asyncio
+async def test_accept_participant_notifies_participant(client: AsyncClient, session: AsyncSession):
+    token1, uid1 = await _register_and_get_token(client, "bnotif_c2")
+    token2, uid2 = await _register_and_get_token(client, "bnotif_j2")
+
+    court_id = await _create_court(client, token1)
+    await _approve_court(session, court_id)
+    booking_id = await _create_booking(client, token1, court_id)
+
+    await client.post(f"/api/v1/bookings/{booking_id}/join", headers=_auth(token2))
+
+    await client.patch(
+        f"/api/v1/bookings/{booking_id}/participants/{uid2}",
+        json={"status": "accepted"},
+        headers=_auth(token1),
+    )
+
+    resp = await client.get("/api/v1/notifications", headers=_auth(token2))
+    notifs = resp.json()
+    accept_notifs = [n for n in notifs if n["type"] == "booking_accepted"]
+    assert len(accept_notifs) == 1
+    assert accept_notifs[0]["actor_id"] == uid1
+
+
+@pytest.mark.asyncio
+async def test_reject_participant_notifies_participant(client: AsyncClient, session: AsyncSession):
+    token1, uid1 = await _register_and_get_token(client, "bnotif_c3")
+    token2, uid2 = await _register_and_get_token(client, "bnotif_j3")
+
+    court_id = await _create_court(client, token1)
+    await _approve_court(session, court_id)
+    booking_id = await _create_booking(client, token1, court_id)
+
+    await client.post(f"/api/v1/bookings/{booking_id}/join", headers=_auth(token2))
+
+    await client.patch(
+        f"/api/v1/bookings/{booking_id}/participants/{uid2}",
+        json={"status": "rejected"},
+        headers=_auth(token1),
+    )
+
+    resp = await client.get("/api/v1/notifications", headers=_auth(token2))
+    notifs = resp.json()
+    reject_notifs = [n for n in notifs if n["type"] == "booking_rejected"]
+    assert len(reject_notifs) == 1
+
+
+@pytest.mark.asyncio
+async def test_cancel_booking_notifies_participants(client: AsyncClient, session: AsyncSession):
+    token1, uid1 = await _register_and_get_token(client, "bnotif_c4")
+    token2, uid2 = await _register_and_get_token(client, "bnotif_j4")
+
+    court_id = await _create_court(client, token1)
+    await _approve_court(session, court_id)
+    booking_id = await _create_booking(client, token1, court_id)
+
+    await client.post(f"/api/v1/bookings/{booking_id}/join", headers=_auth(token2))
+    await client.patch(
+        f"/api/v1/bookings/{booking_id}/participants/{uid2}",
+        json={"status": "accepted"},
+        headers=_auth(token1),
+    )
+
+    await client.post(f"/api/v1/bookings/{booking_id}/cancel", headers=_auth(token1))
+
+    resp = await client.get("/api/v1/notifications", headers=_auth(token2))
+    notifs = resp.json()
+    cancel_notifs = [n for n in notifs if n["type"] == "booking_cancelled"]
+    assert len(cancel_notifs) == 1
+    assert cancel_notifs[0]["actor_id"] == uid1
+
+
+@pytest.mark.asyncio
+async def test_confirm_booking_notifies_participants(client: AsyncClient, session: AsyncSession):
+    token1, uid1 = await _register_and_get_token(client, "bnotif_c5")
+    token2, uid2 = await _register_and_get_token(client, "bnotif_j5")
+
+    court_id = await _create_court(client, token1)
+    await _approve_court(session, court_id)
+    booking_id = await _create_booking(client, token1, court_id)
+
+    await client.post(f"/api/v1/bookings/{booking_id}/join", headers=_auth(token2))
+    await client.patch(
+        f"/api/v1/bookings/{booking_id}/participants/{uid2}",
+        json={"status": "accepted"},
+        headers=_auth(token1),
+    )
+
+    await client.post(f"/api/v1/bookings/{booking_id}/confirm", headers=_auth(token1))
+
+    resp = await client.get("/api/v1/notifications", headers=_auth(token2))
+    notifs = resp.json()
+    confirm_notifs = [n for n in notifs if n["type"] == "booking_confirmed"]
+    assert len(confirm_notifs) == 1
+
+
+@pytest.mark.asyncio
+async def test_complete_booking_notifies_participants(client: AsyncClient, session: AsyncSession):
+    token1, uid1 = await _register_and_get_token(client, "bnotif_c6")
+    token2, uid2 = await _register_and_get_token(client, "bnotif_j6")
+
+    court_id = await _create_court(client, token1)
+    await _approve_court(session, court_id)
+    booking_id = await _create_booking(client, token1, court_id)
+
+    await client.post(f"/api/v1/bookings/{booking_id}/join", headers=_auth(token2))
+    await client.patch(
+        f"/api/v1/bookings/{booking_id}/participants/{uid2}",
+        json={"status": "accepted"},
+        headers=_auth(token1),
+    )
+    await client.post(f"/api/v1/bookings/{booking_id}/confirm", headers=_auth(token1))
+
+    # Patch play_date to past so complete is allowed
+    from app.models.booking import Booking
+    from sqlalchemy import select
+
+    result = await session.execute(select(Booking).where(Booking.id == uuid.UUID(booking_id)))
+    booking = result.scalar_one()
+    booking.play_date = date.today() - timedelta(days=1)
+    booking.start_time = time(10, 0)
+    await session.commit()
+
+    await client.post(f"/api/v1/bookings/{booking_id}/complete", headers=_auth(token1))
+
+    resp = await client.get("/api/v1/notifications", headers=_auth(token2))
+    notifs = resp.json()
+    complete_notifs = [n for n in notifs if n["type"] == "booking_completed"]
+    assert len(complete_notifs) == 1

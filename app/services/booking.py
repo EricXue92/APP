@@ -16,8 +16,10 @@ from app.models.booking import (
 )
 from app.models.court import Court
 from app.models.credit import CreditReason
+from app.models.notification import NotificationType
 from app.models.user import Gender, User
 from app.services.credit import apply_credit_change
+from app.services.notification import create_notification
 
 
 def _ntrp_to_float(level: str) -> float:
@@ -164,6 +166,15 @@ async def join_booking(session: AsyncSession, booking: Booking, user: User) -> B
         status=ParticipantStatus.PENDING,
     )
     session.add(participant)
+    # Notify booking creator
+    await create_notification(
+        session,
+        recipient_id=booking.creator_id,
+        type=NotificationType.BOOKING_JOINED,
+        actor_id=user.id,
+        target_type="booking",
+        target_id=booking.id,
+    )
     await session.commit()
     await session.refresh(participant)
     return participant
@@ -175,6 +186,17 @@ def count_accepted_participants(booking: Booking) -> int:
 
 async def confirm_booking(session: AsyncSession, booking: Booking) -> Booking:
     booking.status = BookingStatus.CONFIRMED
+    # Notify all participants except creator
+    for p in booking.participants:
+        if p.user_id != booking.creator_id and p.status == ParticipantStatus.ACCEPTED:
+            await create_notification(
+                session,
+                recipient_id=p.user_id,
+                type=NotificationType.BOOKING_CONFIRMED,
+                actor_id=booking.creator_id,
+                target_type="booking",
+                target_id=booking.id,
+            )
     await session.commit()
     await session.refresh(booking)
     return booking
@@ -187,6 +209,17 @@ async def cancel_booking(session: AsyncSession, booking: Booking, user: User) ->
 
     if user.id == booking.creator_id:
         booking.status = BookingStatus.CANCELLED
+        # Notify all accepted/pending participants (except creator)
+        for p in booking.participants:
+            if p.user_id != user.id and p.status in (ParticipantStatus.PENDING, ParticipantStatus.ACCEPTED):
+                await create_notification(
+                    session,
+                    recipient_id=p.user_id,
+                    type=NotificationType.BOOKING_CANCELLED,
+                    actor_id=user.id,
+                    target_type="booking",
+                    target_id=booking.id,
+                )
         await apply_credit_change(session, user, cancel_reason, description=f"Cancelled booking {booking.id}")
     else:
         for p in booking.participants:
@@ -209,6 +242,15 @@ async def complete_booking(session: AsyncSession, booking: Booking) -> Booking:
         if p.status == ParticipantStatus.ACCEPTED:
             user = p.user
             await apply_credit_change(session, user, CreditReason.ATTENDED, description=f"Attended booking {booking.id}")
+            if p.user_id != booking.creator_id:
+                await create_notification(
+                    session,
+                    recipient_id=p.user_id,
+                    type=NotificationType.BOOKING_COMPLETED,
+                    actor_id=booking.creator_id,
+                    target_type="booking",
+                    target_id=booking.id,
+                )
 
     await session.commit()
     await session.refresh(booking)
@@ -221,6 +263,25 @@ async def update_participant_status(
     for p in booking.participants:
         if p.user_id == user_id:
             p.status = ParticipantStatus(new_status)
+            # Notify participant of status change
+            if new_status == "accepted":
+                await create_notification(
+                    session,
+                    recipient_id=p.user_id,
+                    type=NotificationType.BOOKING_ACCEPTED,
+                    actor_id=booking.creator_id,
+                    target_type="booking",
+                    target_id=booking.id,
+                )
+            elif new_status == "rejected":
+                await create_notification(
+                    session,
+                    recipient_id=p.user_id,
+                    type=NotificationType.BOOKING_REJECTED,
+                    actor_id=booking.creator_id,
+                    target_type="booking",
+                    target_id=booking.id,
+                )
             await session.commit()
             await session.refresh(p)
             return p
