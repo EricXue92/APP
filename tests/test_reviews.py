@@ -269,6 +269,29 @@ async def test_submit_review_duplicate(client: AsyncClient, session: AsyncSessio
 
 
 @pytest.mark.asyncio
+async def test_submit_review_invalid_rating(client: AsyncClient, session: AsyncSession):
+    """Ratings outside 1-5 are rejected by Pydantic validation (422)."""
+    token1, user_id1 = await _register_and_get_token(client, "rev_inv1")
+    token2, user_id2 = await _register_and_get_token(client, "rev_inv2")
+    court = await _seed_court(session)
+
+    booking_id = await _create_completed_booking(client, session, token1, token2, str(court.id))
+
+    resp = await client.post(
+        "/api/v1/reviews",
+        headers={"Authorization": f"Bearer {token1}"},
+        json={
+            "booking_id": booking_id,
+            "reviewee_id": user_id2,
+            "skill_rating": 6,
+            "punctuality_rating": 0,
+            "sportsmanship_rating": 3,
+        },
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
 async def test_submit_review_window_expired(client: AsyncClient, session: AsyncSession):
     token1, user_id1 = await _register_and_get_token(client, "rev_exp1")
     token2, user_id2 = await _register_and_get_token(client, "rev_exp2")
