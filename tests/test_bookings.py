@@ -389,7 +389,7 @@ async def test_list_bookings(client: AsyncClient, session: AsyncSession):
 
     await _create_booking(client, token, str(court.id))
 
-    resp = await client.get("/api/v1/bookings")
+    resp = await client.get("/api/v1/bookings", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 200
     assert len(resp.json()) == 1
 

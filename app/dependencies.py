@@ -32,6 +32,9 @@ async def get_current_user(
     if user is None or not user.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or disabled")
 
+    if user.is_suspended:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account has been suspended")
+
     return user
 
 
@@ -46,3 +49,15 @@ def get_language(accept_language: str = Header(default="zh-Hant")) -> str:
 
 
 Lang = Annotated[str, Depends(get_language)]
+
+
+from app.models.user import UserRole
+
+
+async def require_admin(user: CurrentUser) -> User:
+    if user.role not in (UserRole.ADMIN, UserRole.SUPERADMIN):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+    return user
+
+
+AdminUser = Annotated[User, Depends(require_admin)]
