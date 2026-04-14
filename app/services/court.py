@@ -41,6 +41,25 @@ async def get_court_by_id(session: AsyncSession, court_id: uuid.UUID) -> Court |
     return result.scalar_one_or_none()
 
 
+async def search_courts_by_keyword(
+    session: AsyncSession,
+    keyword: str,
+) -> list[Court]:
+    """Fuzzy search approved courts by name or address keyword (for booking assistant)."""
+    pattern = f"%{keyword}%"
+    query = (
+        select(Court)
+        .where(
+            Court.is_approved == True,  # noqa: E712
+            (Court.name.ilike(pattern)) | (Court.address.ilike(pattern)),
+        )
+        .order_by(Court.name)
+        .limit(10)
+    )
+    result = await session.execute(query)
+    return list(result.scalars().all())
+
+
 async def list_courts(
     session: AsyncSession,
     *,

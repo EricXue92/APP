@@ -115,6 +115,7 @@ async def list_bookings(
     query = (
         select(Booking)
         .join(Booking.court)
+        .join(User, Booking.creator_id == User.id)
         .where(Booking.status == BookingStatus.OPEN)
     )
     if city:
@@ -136,7 +137,7 @@ async def list_bookings(
             Booking.creator_id.notin_(blocked_ids),
             Booking.creator_id.notin_(blocker_ids),
         )
-    query = query.order_by(Booking.play_date, Booking.start_time)
+    query = query.order_by(User.is_ideal_player.desc(), Booking.play_date, Booking.start_time)
     result = await session.execute(query)
     return list(result.scalars().all())
 

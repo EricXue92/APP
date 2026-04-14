@@ -22,6 +22,8 @@ class NotificationType(str, enum.Enum):
     REPORT_RESOLVED = "report_resolved"
     ACCOUNT_WARNED = "account_warned"
     ACCOUNT_SUSPENDED = "account_suspended"
+    IDEAL_PLAYER_GAINED = "ideal_player_gained"
+    IDEAL_PLAYER_LOST = "ideal_player_lost"
 
 
 class Notification(Base):

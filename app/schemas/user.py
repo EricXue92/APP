@@ -17,6 +17,7 @@ class UserProfileResponse(BaseModel):
     years_playing: int | None
     language: str
     is_verified: bool
+    is_ideal_player: bool
     created_at: datetime
 
     model_config = {"from_attributes": True}
