@@ -28,6 +28,7 @@ from app.services.booking import (
     update_participant_status,
     _ntrp_to_float,
 )
+from app.services.block import is_blocked
 from app.services.court import get_court_by_id
 
 router = APIRouter()
@@ -99,11 +100,15 @@ async def create_new_booking(body: BookingCreateRequest, user: CurrentUser, sess
 @router.get("", response_model=list[BookingResponse])
 async def get_bookings(
     session: DbSession,
+    user: CurrentUser,
     city: str | None = Query(default=None),
     match_type: str | None = Query(default=None, pattern=r"^(singles|doubles)$"),
     gender_requirement: str | None = Query(default=None, pattern=r"^(male_only|female_only|any)$"),
 ):
-    bookings = await list_bookings(session, city=city, match_type=match_type, gender_requirement=gender_requirement)
+    bookings = await list_bookings(
+        session, city=city, match_type=match_type, gender_requirement=gender_requirement,
+        current_user_id=user.id,
+    )
     return bookings
 
 
@@ -151,6 +156,10 @@ async def join_existing_booking(booking_id: str, user: CurrentUser, session: DbS
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=t("booking.gender_mismatch", lang))
     if booking.gender_requirement.value == "female_only" and user.gender != Gender.FEMALE:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=t("booking.gender_mismatch", lang))
+
+    # Check block relationship
+    if await is_blocked(session, user.id, booking.creator_id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=t("block.user_blocked", lang))
 
     # Check if full
     accepted_count = count_accepted_participants(booking)

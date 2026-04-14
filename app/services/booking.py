@@ -5,6 +5,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.models.block import Block
 from app.models.booking import (
     Booking,
     BookingParticipant,
@@ -107,6 +108,7 @@ async def list_bookings(
     city: str | None = None,
     match_type: str | None = None,
     gender_requirement: str | None = None,
+    current_user_id: uuid.UUID | None = None,
 ) -> list[Booking]:
     query = (
         select(Booking)
@@ -119,6 +121,19 @@ async def list_bookings(
         query = query.where(Booking.match_type == MatchType(match_type))
     if gender_requirement:
         query = query.where(Booking.gender_requirement == GenderRequirement(gender_requirement))
+    if current_user_id:
+        blocked_ids = (
+            select(Block.blocked_id)
+            .where(Block.blocker_id == current_user_id)
+        )
+        blocker_ids = (
+            select(Block.blocker_id)
+            .where(Block.blocked_id == current_user_id)
+        )
+        query = query.where(
+            Booking.creator_id.notin_(blocked_ids),
+            Booking.creator_id.notin_(blocker_ids),
+        )
     query = query.order_by(Booking.play_date, Booking.start_time)
     result = await session.execute(query)
     return list(result.scalars().all())

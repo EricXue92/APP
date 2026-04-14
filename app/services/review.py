@@ -9,6 +9,7 @@ from app.i18n import t
 from app.models.booking import Booking, BookingParticipant, BookingStatus, ParticipantStatus
 from app.models.review import Review
 from app.models.user import User
+from app.services.block import is_blocked
 
 REVIEW_WINDOW_HOURS = 24
 
@@ -83,6 +84,10 @@ async def submit_review(
     )
     if dup_result.scalar_one_or_none() is not None:
         raise LookupError(t("review.already_submitted", lang))
+
+    # Check block relationship
+    if await is_blocked(session, reviewer.id, reviewee_id):
+        raise PermissionError(t("block.user_blocked", lang))
 
     # Create review
     review = Review(
