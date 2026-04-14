@@ -154,3 +154,43 @@ async def test_list_notifications_pagination(client: AsyncClient, session: Async
     # Get remaining
     resp = await client.get("/api/v1/notifications?limit=2&offset=2", headers=_auth(token1))
     assert len(resp.json()) == 1
+
+
+@pytest.mark.asyncio
+async def test_follow_creates_new_follower_notification(client: AsyncClient, session: AsyncSession):
+    token1, uid1 = await _register_and_get_token(client, "fnotif1")
+    token2, uid2 = await _register_and_get_token(client, "fnotif2")
+
+    await client.post("/api/v1/follows", json={"followed_id": uid1}, headers=_auth(token2))
+
+    resp = await client.get("/api/v1/notifications", headers=_auth(token1))
+    notifs = resp.json()
+    assert len(notifs) == 1
+    assert notifs[0]["type"] == "new_follower"
+    assert notifs[0]["actor_id"] == uid2
+    assert notifs[0]["target_type"] == "follow"
+
+
+@pytest.mark.asyncio
+async def test_mutual_follow_creates_new_mutual_notification(client: AsyncClient, session: AsyncSession):
+    token1, uid1 = await _register_and_get_token(client, "mnotif1")
+    token2, uid2 = await _register_and_get_token(client, "mnotif2")
+
+    # A follows B → B gets new_follower
+    await client.post("/api/v1/follows", json={"followed_id": uid2}, headers=_auth(token1))
+
+    # B follows A → A gets new_follower, AND A gets new_mutual
+    await client.post("/api/v1/follows", json={"followed_id": uid1}, headers=_auth(token2))
+
+    # A should have: new_follower (from B) + new_mutual (B followed back)
+    resp = await client.get("/api/v1/notifications", headers=_auth(token1))
+    notifs = resp.json()
+    types = [n["type"] for n in notifs]
+    assert "new_follower" in types
+    assert "new_mutual" in types
+
+    # B should have: new_follower (from A)
+    resp = await client.get("/api/v1/notifications", headers=_auth(token2))
+    notifs = resp.json()
+    assert len(notifs) == 1
+    assert notifs[0]["type"] == "new_follower"

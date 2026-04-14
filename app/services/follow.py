@@ -5,8 +5,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.i18n import t
 from app.models.follow import Follow
+from app.models.notification import NotificationType
 from app.models.user import User
 from app.services.block import is_blocked
+from app.services.notification import create_notification
 
 
 async def create_follow(
@@ -37,11 +39,34 @@ async def create_follow(
 
     follow = Follow(follower_id=follower_id, followed_id=followed_id)
     session.add(follow)
-    await session.commit()
+    await session.flush()
     await session.refresh(follow)
 
     # Compute is_mutual
     mutual = await _check_reverse(session, follower_id, followed_id)
+
+    # Notify followed user
+    await create_notification(
+        session,
+        recipient_id=followed_id,
+        type=NotificationType.NEW_FOLLOWER,
+        actor_id=follower_id,
+        target_type="follow",
+        target_id=follow.id,
+    )
+
+    # If mutual, notify the person who is now followed back (the "original" follower)
+    if mutual:
+        await create_notification(
+            session,
+            recipient_id=followed_id,
+            type=NotificationType.NEW_MUTUAL,
+            actor_id=follower_id,
+            target_type="follow",
+            target_id=follow.id,
+        )
+
+    await session.commit()
 
     return _to_dict(follow, mutual)
 
