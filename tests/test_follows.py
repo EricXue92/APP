@@ -120,3 +120,65 @@ async def test_mutual_broken_on_unfollow(client: AsyncClient, session: AsyncSess
     data = resp.json()
     assert len(data) == 1
     assert data[0]["is_mutual"] is False
+
+
+@pytest.mark.asyncio
+async def test_follow_self_rejected(client: AsyncClient, session: AsyncSession):
+    token1, uid1 = await _register_and_get_token(client, "selffollow")
+
+    resp = await client.post("/api/v1/follows", json={"followed_id": uid1}, headers=_auth(token1))
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_duplicate_follow_rejected(client: AsyncClient, session: AsyncSession):
+    token1, uid1 = await _register_and_get_token(client, "dupfol1")
+    token2, uid2 = await _register_and_get_token(client, "dupfol2")
+
+    await client.post("/api/v1/follows", json={"followed_id": uid2}, headers=_auth(token1))
+    resp = await client.post("/api/v1/follows", json={"followed_id": uid2}, headers=_auth(token1))
+    assert resp.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_unfollow_nonexistent(client: AsyncClient, session: AsyncSession):
+    token1, uid1 = await _register_and_get_token(client, "unfolghost")
+    fake_id = str(uuid.uuid4())
+
+    resp = await client.delete(f"/api/v1/follows/{fake_id}", headers=_auth(token1))
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_follow_nonexistent_user(client: AsyncClient, session: AsyncSession):
+    token1, uid1 = await _register_and_get_token(client, "folghost")
+    fake_id = str(uuid.uuid4())
+
+    resp = await client.post("/api/v1/follows", json={"followed_id": fake_id}, headers=_auth(token1))
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_follow_blocked_user_rejected(client: AsyncClient, session: AsyncSession):
+    token1, uid1 = await _register_and_get_token(client, "blkfol1")
+    token2, uid2 = await _register_and_get_token(client, "blkfol2")
+
+    # Block user2
+    await client.post("/api/v1/blocks", json={"blocked_id": uid2}, headers=_auth(token1))
+
+    # Try to follow blocked user
+    resp = await client.post("/api/v1/follows", json={"followed_id": uid2}, headers=_auth(token1))
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_follow_user_who_blocked_you_rejected(client: AsyncClient, session: AsyncSession):
+    token1, uid1 = await _register_and_get_token(client, "blkrev1")
+    token2, uid2 = await _register_and_get_token(client, "blkrev2")
+
+    # User2 blocks user1
+    await client.post("/api/v1/blocks", json={"blocked_id": uid1}, headers=_auth(token2))
+
+    # User1 tries to follow user2 — should fail
+    resp = await client.post("/api/v1/follows", json={"followed_id": uid2}, headers=_auth(token1))
+    assert resp.status_code == 400
