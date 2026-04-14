@@ -132,3 +132,25 @@ async def test_mark_all_as_read(client: AsyncClient, session: AsyncSession):
 
     resp = await client.get("/api/v1/notifications/unread-count", headers=_auth(token1))
     assert resp.json()["unread_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_list_notifications_pagination(client: AsyncClient, session: AsyncSession):
+    token1, uid1 = await _register_and_get_token(client, "notif_page1")
+
+    # Create 3 followers → 3 notifications for uid1
+    for i in range(3):
+        tok, _ = await _register_and_get_token(client, f"notif_pager{i}")
+        await client.post("/api/v1/follows", json={"followed_id": uid1}, headers=_auth(tok))
+
+    # Get all
+    resp = await client.get("/api/v1/notifications", headers=_auth(token1))
+    assert len(resp.json()) == 3
+
+    # Get first 2
+    resp = await client.get("/api/v1/notifications?limit=2&offset=0", headers=_auth(token1))
+    assert len(resp.json()) == 2
+
+    # Get remaining
+    resp = await client.get("/api/v1/notifications?limit=2&offset=2", headers=_auth(token1))
+    assert len(resp.json()) == 1
