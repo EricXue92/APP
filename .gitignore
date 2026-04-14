@@ -17,3 +17,6 @@ wheels/
 
 # Superpowers
 .superpowers/
+
+# Worktrees
+.worktrees/
