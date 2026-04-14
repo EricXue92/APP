@@ -240,3 +240,55 @@ async def test_credit_change_triggers_evaluation(session: AsyncSession):
 
     await session.refresh(user)
     assert user.is_ideal_player is True
+
+
+from app.services.review import submit_review
+
+
+@pytest.mark.asyncio
+async def test_review_triggers_evaluation(session: AsyncSession):
+    """submit_review should trigger ideal player evaluation for the reviewee."""
+    reviewee = await _create_user(session, "review_target", credit_score=95)
+    reviewer = await _create_user(session, "review_author", credit_score=80)
+    await _seed_completed_bookings(session, reviewee.id, 10)
+    # Seed reviews that bring average to >= 4.0
+    await _seed_reviews(session, reviewee.id, [(5, 5, 5)] * 2)
+
+    # Create a completed booking between reviewer and reviewee
+    court = await _create_court(session)
+    booking = Booking(
+        creator_id=reviewer.id,
+        court_id=court.id,
+        match_type=MatchType.SINGLES,
+        play_date=date(2026, 4, 1),
+        start_time=time(10, 0),
+        end_time=time(12, 0),
+        min_ntrp="3.0",
+        max_ntrp="4.0",
+        gender_requirement=GenderRequirement.ANY,
+        max_participants=2,
+        status=BookingStatus.COMPLETED,
+    )
+    session.add(booking)
+    await session.flush()
+    for uid in [reviewer.id, reviewee.id]:
+        session.add(BookingParticipant(
+            booking_id=booking.id,
+            user_id=uid,
+            status=ParticipantStatus.ACCEPTED,
+        ))
+    await session.commit()
+
+    # Submit review — this should trigger evaluation
+    await submit_review(
+        session,
+        booking_id=booking.id,
+        reviewer=reviewer,
+        reviewee_id=reviewee.id,
+        skill_rating=5,
+        punctuality_rating=5,
+        sportsmanship_rating=5,
+    )
+
+    await session.refresh(reviewee)
+    assert reviewee.is_ideal_player is True

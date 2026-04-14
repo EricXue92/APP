@@ -11,6 +11,7 @@ from app.models.review import Review
 from app.models.user import User
 from app.models.notification import NotificationType
 from app.services.block import is_blocked
+from app.services.ideal_player import evaluate_ideal_status
 from app.services.notification import create_notification
 
 REVIEW_WINDOW_HOURS = 24
@@ -124,6 +125,9 @@ async def submit_review(
             target_type="review",
             target_id=reverse.id,
         )
+
+    # Evaluate ideal player status for reviewee
+    await evaluate_ideal_status(session, reviewee_id)
 
     await session.commit()
 
