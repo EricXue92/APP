@@ -182,3 +182,42 @@ async def test_follow_user_who_blocked_you_rejected(client: AsyncClient, session
     # User1 tries to follow user2 — should fail
     resp = await client.post("/api/v1/follows", json={"followed_id": uid2}, headers=_auth(token1))
     assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_follows_removed_on_block(client: AsyncClient, session: AsyncSession):
+    token1, uid1 = await _register_and_get_token(client, "folblk1")
+    token2, uid2 = await _register_and_get_token(client, "folblk2")
+
+    # Create mutual follow
+    await client.post("/api/v1/follows", json={"followed_id": uid2}, headers=_auth(token1))
+    await client.post("/api/v1/follows", json={"followed_id": uid1}, headers=_auth(token2))
+
+    # Verify both following
+    resp = await client.get("/api/v1/follows/following", headers=_auth(token1))
+    assert len(resp.json()) == 1
+    resp = await client.get("/api/v1/follows/following", headers=_auth(token2))
+    assert len(resp.json()) == 1
+
+    # User1 blocks user2
+    await client.post("/api/v1/blocks", json={"blocked_id": uid2}, headers=_auth(token1))
+
+    # Both follow lists should be empty
+    resp = await client.get("/api/v1/follows/following", headers=_auth(token1))
+    assert len(resp.json()) == 0
+    resp = await client.get("/api/v1/follows/following", headers=_auth(token2))
+    assert len(resp.json()) == 0
+
+
+@pytest.mark.asyncio
+async def test_cannot_follow_while_blocked(client: AsyncClient, session: AsyncSession):
+    token1, uid1 = await _register_and_get_token(client, "nofol1")
+    token2, uid2 = await _register_and_get_token(client, "nofol2")
+
+    await client.post("/api/v1/blocks", json={"blocked_id": uid2}, headers=_auth(token1))
+
+    # Neither can follow the other
+    resp = await client.post("/api/v1/follows", json={"followed_id": uid2}, headers=_auth(token1))
+    assert resp.status_code == 400
+    resp = await client.post("/api/v1/follows", json={"followed_id": uid1}, headers=_auth(token2))
+    assert resp.status_code == 400
