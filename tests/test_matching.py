@@ -329,3 +329,129 @@ async def test_score_ideal_player_bonus(client: AsyncClient, session: AsyncSessi
     score_b = await compute_match_score(session, user_a, pref_a, user_b, pref_b)
     score_c = await compute_match_score(session, user_a, pref_a, user_c, pref_c)
     assert score_c > score_b
+
+
+# --- Candidate Search Tests ---
+
+
+@pytest.mark.asyncio
+async def test_search_candidates(client: AsyncClient, session: AsyncSession):
+    """Should return compatible candidates sorted by score."""
+    token_a, uid_a = await _register_and_get_token(client, "cand_a", ntrp="3.5")
+    token_b, uid_b = await _register_and_get_token(client, "cand_b", ntrp="3.5")
+    court = await _seed_court(session)
+
+    # Both create preferences with overlapping time and same court
+    pref_body = {
+        "match_type": "singles",
+        "min_ntrp": "3.0",
+        "max_ntrp": "4.0",
+        "time_slots": [{"day_of_week": 5, "start_time": "09:00:00", "end_time": "12:00:00"}],
+        "court_ids": [str(court.id)],
+    }
+    await client.post("/api/v1/matching/preferences", headers=_auth(token_a), json=pref_body)
+    await client.post("/api/v1/matching/preferences", headers=_auth(token_b), json=pref_body)
+
+    resp = await client.get("/api/v1/matching/candidates", headers=_auth(token_a))
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) == 1
+    assert data[0]["user_id"] == uid_b
+    assert data[0]["score"] > 0
+
+
+@pytest.mark.asyncio
+async def test_search_candidates_filters_blocked(client: AsyncClient, session: AsyncSession):
+    """Blocked users should not appear in candidates."""
+    token_a, uid_a = await _register_and_get_token(client, "cand_c", ntrp="3.5")
+    token_b, uid_b = await _register_and_get_token(client, "cand_d", ntrp="3.5")
+    court = await _seed_court(session)
+
+    pref_body = {
+        "match_type": "singles",
+        "min_ntrp": "3.0",
+        "max_ntrp": "4.0",
+        "time_slots": [{"day_of_week": 5, "start_time": "09:00:00", "end_time": "12:00:00"}],
+        "court_ids": [str(court.id)],
+    }
+    await client.post("/api/v1/matching/preferences", headers=_auth(token_a), json=pref_body)
+    await client.post("/api/v1/matching/preferences", headers=_auth(token_b), json=pref_body)
+
+    # Block user B
+    await client.post("/api/v1/blocks", headers=_auth(token_a), json={"blocked_id": uid_b})
+
+    resp = await client.get("/api/v1/matching/candidates", headers=_auth(token_a))
+    assert resp.status_code == 200
+    assert len(resp.json()) == 0
+
+
+@pytest.mark.asyncio
+async def test_search_candidates_no_preference(client: AsyncClient, session: AsyncSession):
+    """Should return 404 if user has no preference."""
+    token, _ = await _register_and_get_token(client, "cand_e")
+
+    resp = await client.get("/api/v1/matching/candidates", headers=_auth(token))
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_search_candidates_inactive(client: AsyncClient, session: AsyncSession):
+    """Should return 400 if preference is inactive."""
+    token, _ = await _register_and_get_token(client, "cand_f")
+
+    pref_body = {
+        "min_ntrp": "3.0",
+        "max_ntrp": "4.0",
+        "time_slots": [{"day_of_week": 5, "start_time": "09:00:00", "end_time": "12:00:00"}],
+    }
+    await client.post("/api/v1/matching/preferences", headers=_auth(token), json=pref_body)
+    await client.patch("/api/v1/matching/preferences/toggle", headers=_auth(token))
+
+    resp = await client.get("/api/v1/matching/candidates", headers=_auth(token))
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_search_booking_recommendations(client: AsyncClient, session: AsyncSession):
+    """Should return open bookings matching user's preferences."""
+    token_a, uid_a = await _register_and_get_token(client, "brec_a", ntrp="3.5")
+    token_b, uid_b = await _register_and_get_token(client, "brec_b", ntrp="3.5")
+    court = await _seed_court(session)
+
+    # User A creates a preference
+    pref_body = {
+        "match_type": "singles",
+        "min_ntrp": "3.0",
+        "max_ntrp": "4.0",
+        "time_slots": [{"day_of_week": 5, "start_time": "09:00:00", "end_time": "12:00:00"}],
+        "court_ids": [str(court.id)],
+    }
+    await client.post("/api/v1/matching/preferences", headers=_auth(token_a), json=pref_body)
+
+    # User B creates a booking on a Saturday (day_of_week=5)
+    today = date.today()
+    days_until_sat = (5 - today.weekday()) % 7
+    if days_until_sat == 0:
+        days_until_sat = 7
+    next_sat = today + timedelta(days=days_until_sat)
+
+    await client.post(
+        "/api/v1/bookings",
+        headers=_auth(token_b),
+        json={
+            "court_id": str(court.id),
+            "match_type": "singles",
+            "play_date": next_sat.isoformat(),
+            "start_time": "10:00:00",
+            "end_time": "12:00:00",
+            "min_ntrp": "3.0",
+            "max_ntrp": "4.0",
+        },
+    )
+
+    resp = await client.get("/api/v1/matching/bookings", headers=_auth(token_a))
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) >= 1
+    assert data[0]["creator_nickname"] == "Player_brec_b"
+    assert data[0]["score"] > 0

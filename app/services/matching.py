@@ -1,11 +1,13 @@
 import math
 import uuid
-from datetime import datetime, time, timezone
+from datetime import datetime, time, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.models.block import Block
+from app.models.booking import Booking, BookingStatus, GenderRequirement
 from app.models.court import Court
 from app.models.matching import (
     GenderPreference,
@@ -295,3 +297,183 @@ async def compute_match_score(
     )
 
     return round(total, 2)
+
+
+# --- Candidate Search ---
+
+
+async def search_candidates(
+    session: AsyncSession,
+    user: User,
+    pref: MatchPreference,
+    *,
+    limit: int = 10,
+) -> list[dict]:
+    """Find and rank compatible users for user-to-user matching."""
+    # Get all active preferences (excluding self, inactive, expired)
+    thirty_days_ago = datetime.now(timezone.utc) - timedelta(days=30)
+    result = await session.execute(
+        select(MatchPreference)
+        .options(
+            selectinload(MatchPreference.time_slots),
+            selectinload(MatchPreference.preferred_courts),
+            selectinload(MatchPreference.user),
+        )
+        .where(
+            MatchPreference.user_id != user.id,
+            MatchPreference.is_active == True,  # noqa: E712
+            MatchPreference.last_active_at >= thirty_days_ago,
+        )
+    )
+    candidates_prefs = list(result.scalars().all())
+
+    # Filter blocked users
+    blocked_result = await session.execute(
+        select(Block).where(
+            or_(
+                Block.blocker_id == user.id,
+                Block.blocked_id == user.id,
+            )
+        )
+    )
+    blocked_pairs = blocked_result.scalars().all()
+    blocked_ids = set()
+    for b in blocked_pairs:
+        blocked_ids.add(b.blocker_id)
+        blocked_ids.add(b.blocked_id)
+    blocked_ids.discard(user.id)
+
+    scored = []
+    for cp in candidates_prefs:
+        candidate = cp.user
+        if candidate.id in blocked_ids:
+            continue
+        if candidate.is_suspended:
+            continue
+
+        score = await compute_match_score(session, user, pref, candidate, cp)
+        if score is not None:
+            scored.append({
+                "user_id": str(candidate.id),
+                "nickname": candidate.nickname,
+                "gender": candidate.gender.value,
+                "ntrp_level": candidate.ntrp_level,
+                "ntrp_label": candidate.ntrp_label,
+                "credit_score": candidate.credit_score,
+                "is_ideal_player": candidate.is_ideal_player,
+                "city": candidate.city,
+                "score": score,
+            })
+
+    scored.sort(key=lambda x: x["score"], reverse=True)
+    return scored[:limit]
+
+
+async def search_booking_recommendations(
+    session: AsyncSession,
+    user: User,
+    pref: MatchPreference,
+    *,
+    limit: int = 10,
+) -> list[dict]:
+    """Find open bookings matching user's preferences."""
+    # Get open bookings not created by self
+    result = await session.execute(
+        select(Booking)
+        .options(
+            selectinload(Booking.creator),
+            selectinload(Booking.court),
+        )
+        .where(
+            Booking.status == BookingStatus.OPEN,
+            Booking.creator_id != user.id,
+            Booking.play_date >= datetime.now(timezone.utc).date(),
+        )
+    )
+    bookings = list(result.scalars().all())
+
+    # Filter blocked
+    blocked_result = await session.execute(
+        select(Block).where(
+            or_(
+                Block.blocker_id == user.id,
+                Block.blocked_id == user.id,
+            )
+        )
+    )
+    blocked_pairs = blocked_result.scalars().all()
+    blocked_ids = set()
+    for b in blocked_pairs:
+        blocked_ids.add(b.blocker_id)
+        blocked_ids.add(b.blocked_id)
+    blocked_ids.discard(user.id)
+
+    user_ntrp = _ntrp_to_float(user.ntrp_level)
+
+    scored = []
+    for booking in bookings:
+        if booking.creator_id in blocked_ids:
+            continue
+        if booking.creator.is_suspended:
+            continue
+
+        # Gender hard filter
+        if booking.gender_requirement == GenderRequirement.MALE_ONLY and user.gender != Gender.MALE:
+            continue
+        if booking.gender_requirement == GenderRequirement.FEMALE_ONLY and user.gender != Gender.FEMALE:
+            continue
+
+        # NTRP hard filter
+        booking_min = _ntrp_to_float(booking.min_ntrp)
+        booking_max = _ntrp_to_float(booking.max_ntrp)
+        if user_ntrp < booking_min - 0.05 or user_ntrp > booking_max + 0.05:
+            continue
+
+        # Time overlap: check if booking day/time overlaps with any user time slot
+        booking_dow = booking.play_date.weekday()
+        has_time_overlap = False
+        for slot in pref.time_slots:
+            if slot.day_of_week == booking_dow:
+                overlap = _time_overlap_minutes(slot.start_time, slot.end_time, booking.start_time, booking.end_time)
+                if overlap > 0:
+                    has_time_overlap = True
+                    break
+        if not has_time_overlap:
+            continue
+
+        # Score the booking
+        booking_mid = (booking_min + booking_max) / 2
+        ntrp_gap = abs(user_ntrp - booking_mid)
+        ntrp_score = 1.0 if ntrp_gap <= 0.5 else max(0.0, 1.0 - (ntrp_gap - 0.5))
+
+        # Court match
+        pref_court_ids = {pc.court_id for pc in pref.preferred_courts}
+        court_score = 1.0 if booking.court_id in pref_court_ids else 0.3
+
+        # Credit score of creator
+        credit_s = booking.creator.credit_score / 100.0
+
+        # Ideal player
+        ideal_s = 1.0 if booking.creator.is_ideal_player else 0.0
+
+        total = 35 * ntrp_score + 25 * 1.0 + 20 * court_score + 10 * credit_s + 5 * 1.0 + 5 * ideal_s
+        total = round(total, 2)
+
+        scored.append({
+            "booking_id": str(booking.id),
+            "creator_id": str(booking.creator_id),
+            "creator_nickname": booking.creator.nickname,
+            "court_id": str(booking.court_id),
+            "court_name": booking.court.name,
+            "match_type": booking.match_type.value,
+            "play_date": booking.play_date.isoformat(),
+            "start_time": booking.start_time.isoformat(),
+            "end_time": booking.end_time.isoformat(),
+            "min_ntrp": booking.min_ntrp,
+            "max_ntrp": booking.max_ntrp,
+            "gender_requirement": booking.gender_requirement.value,
+            "score": total,
+        })
+
+    scored.sort(key=lambda x: x["score"], reverse=True)
+    return scored[:limit]

@@ -3,6 +3,8 @@ from fastapi import APIRouter, HTTPException, status
 from app.dependencies import CurrentUser, DbSession, Lang
 from app.i18n import t
 from app.schemas.matching import (
+    BookingRecommendationResponse,
+    CandidateResponse,
     PreferenceCreateRequest,
     PreferenceResponse,
     TimeSlotResponse,
@@ -11,6 +13,8 @@ from app.schemas.matching import (
 from app.services.matching import (
     create_preference,
     get_preference_by_user,
+    search_booking_recommendations,
+    search_candidates,
     toggle_preference,
     update_preference,
 )
@@ -97,3 +101,27 @@ async def toggle_match_preference(user: CurrentUser, session: DbSession, lang: L
     except ValueError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=t("matching.preference_not_found", lang))
     return ToggleResponse(is_active=pref.is_active)
+
+
+@router.get("/candidates", response_model=list[CandidateResponse])
+async def find_candidates(user: CurrentUser, session: DbSession, lang: Lang):
+    pref = await get_preference_by_user(session, user.id)
+    if pref is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=t("matching.preference_not_found", lang))
+    if not pref.is_active:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=t("matching.preference_inactive", lang))
+
+    candidates = await search_candidates(session, user, pref)
+    return candidates
+
+
+@router.get("/bookings", response_model=list[BookingRecommendationResponse])
+async def find_booking_recommendations(user: CurrentUser, session: DbSession, lang: Lang):
+    pref = await get_preference_by_user(session, user.id)
+    if pref is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=t("matching.preference_not_found", lang))
+    if not pref.is_active:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=t("matching.preference_inactive", lang))
+
+    bookings = await search_booking_recommendations(session, user, pref)
+    return bookings
