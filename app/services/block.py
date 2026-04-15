@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.i18n import t
 from app.models.block import Block
+from app.models.chat import ChatParticipant, ChatRoom, RoomType
 from app.models.review import Review
 from app.models.user import User
 
@@ -54,6 +55,23 @@ async def create_block(
     )
     for review in result.scalars().all():
         review.is_hidden = True
+
+    # Set shared private chat rooms to read-only
+    blocker_rooms = select(ChatParticipant.room_id).where(ChatParticipant.user_id == blocker_id).scalar_subquery()
+    result = await session.execute(
+        select(ChatRoom).where(
+            ChatRoom.id.in_(
+                select(ChatParticipant.room_id).where(
+                    ChatParticipant.user_id == blocked_id,
+                    ChatParticipant.room_id.in_(blocker_rooms),
+                )
+            ),
+            ChatRoom.type == RoomType.PRIVATE,
+            ChatRoom.is_readonly == False,  # noqa: E712
+        )
+    )
+    for chat_room in result.scalars().all():
+        chat_room.is_readonly = True
 
     await session.commit()
     await session.refresh(block)

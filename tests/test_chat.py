@@ -663,3 +663,24 @@ async def test_non_admin_cannot_delete_message(client: AsyncClient, session: Asy
         headers={"Authorization": f"Bearer {token1}"},
     )
     assert resp.status_code == 403
+
+
+# --- Block Integration Tests ---
+
+
+@pytest.mark.asyncio
+async def test_block_sets_private_room_readonly(client: AsyncClient, session: AsyncSession):
+    token1, token2, uid1, uid2, booking_id, room = await _setup_confirmed_booking_with_room(client, session)
+
+    assert room.is_readonly is False
+
+    # User1 blocks User2
+    resp = await client.post(
+        "/api/v1/blocks",
+        headers={"Authorization": f"Bearer {token1}"},
+        json={"blocked_id": uid2},
+    )
+    assert resp.status_code == 201
+
+    await session.refresh(room)
+    assert room.is_readonly is True
