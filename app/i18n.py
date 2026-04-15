@@ -484,6 +484,41 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "zh-Hant": "該比賽已有結果",
         "en": "This match already has a result",
     },
+    "admin.user_already_suspended": {
+        "zh-Hant": "該用戶已被停權",
+        "zh-Hans": "该用户已被停权",
+        "en": "User is already suspended",
+    },
+    "admin.user_not_suspended": {
+        "zh-Hant": "該用戶未被停權",
+        "zh-Hans": "该用户未被停权",
+        "en": "User is not suspended",
+    },
+    "admin.cannot_change_own_role": {
+        "zh-Hant": "無法修改自己的角色",
+        "zh-Hans": "无法修改自己的角色",
+        "en": "Cannot change your own role",
+    },
+    "admin.court_already_approved": {
+        "zh-Hant": "該球場已通過審核",
+        "zh-Hans": "该球场已通过审核",
+        "en": "Court is already approved",
+    },
+    "admin.cannot_reject_approved_court": {
+        "zh-Hant": "無法拒絕已審核通過的球場",
+        "zh-Hans": "无法拒绝已审核通过的球场",
+        "en": "Cannot reject an approved court",
+    },
+    "admin.booking_already_cancelled": {
+        "zh-Hant": "該約球已取消",
+        "zh-Hans": "该约球已取消",
+        "en": "Booking is already cancelled",
+    },
+    "admin.event_already_cancelled": {
+        "zh-Hant": "該賽事已取消",
+        "zh-Hans": "该赛事已取消",
+        "en": "Event is already cancelled",
+    },
 }
 
 
