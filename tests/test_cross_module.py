@@ -430,3 +430,314 @@ async def test_suspended_proposer_blocks_acceptance(client: AsyncClient, session
     assert resp.status_code == 400, (
         f"Expected 400 when accepting proposal from suspended proposer, got {resp.status_code}: {resp.json()}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Booking lifecycle tests (Task 23)
+# ---------------------------------------------------------------------------
+
+async def _create_booking_raw(
+    client: AsyncClient,
+    token: str,
+    court_id: str,
+    match_type: str = "singles",
+) -> dict:
+    """Create a booking and return the response JSON."""
+    resp = await client.post(
+        "/api/v1/bookings",
+        headers=_auth(token),
+        json={
+            "court_id": court_id,
+            "match_type": match_type,
+            "play_date": _future_date(),
+            "start_time": "10:00:00",
+            "end_time": "12:00:00",
+            "min_ntrp": "3.0",
+            "max_ntrp": "4.0",
+            "gender_requirement": "any",
+        },
+    )
+    assert resp.status_code == 201, f"Create booking failed: {resp.json()}"
+    return resp.json()
+
+
+# ---------------------------------------------------------------------------
+# Test 7: Full happy path — create → join → confirm → complete → review
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_booking_lifecycle_full_happy_path(client: AsyncClient, session: AsyncSession):
+    """Full happy path: create → join → confirm → complete → review.
+
+    Verifies:
+    - Chat room created on confirm
+    - Credit (+5) awarded to both accepted participants on complete
+    - Review window is open after complete
+    """
+    from sqlalchemy import update
+
+    token1, uid1 = await _register_and_get_token(client, "lifecycle_a")
+    token2, uid2 = await _register_and_get_token(client, "lifecycle_b")
+    court = await _seed_court(session)
+
+    # 1. Create booking (creator auto-joins as ACCEPTED)
+    booking = await _create_booking_raw(client, token1, str(court.id))
+    booking_id = booking["id"]
+    assert booking["status"] == "open"
+    assert len(booking["participants"]) == 1
+    assert booking["participants"][0]["status"] == "accepted"
+
+    # 2. Second user joins (PENDING)
+    resp = await client.post(f"/api/v1/bookings/{booking_id}/join", headers=_auth(token2))
+    assert resp.status_code == 200, f"Join failed: {resp.json()}"
+
+    # 3. Creator accepts joiner
+    resp = await client.patch(
+        f"/api/v1/bookings/{booking_id}/participants/{uid2}",
+        headers=_auth(token1),
+        json={"status": "accepted"},
+    )
+    assert resp.status_code == 200, f"Accept failed: {resp.json()}"
+
+    # 4. Confirm booking — chat room should be created
+    resp = await client.post(f"/api/v1/bookings/{booking_id}/confirm", headers=_auth(token1))
+    assert resp.status_code == 200, f"Confirm failed: {resp.json()}"
+    assert resp.json()["status"] == "confirmed"
+
+    # Verify chat room was created
+    room_result = await session.execute(
+        select(ChatRoom).where(ChatRoom.booking_id == uuid.UUID(booking_id))
+    )
+    room = room_result.scalar_one_or_none()
+    assert room is not None, "Chat room should be created on confirm"
+    assert room.is_readonly is False, "Chat room should not be readonly after confirm"
+
+    # 5. Backdate play_date so complete is allowed
+    await session.execute(
+        update(Booking)
+        .where(Booking.id == uuid.UUID(booking_id))
+        .values(play_date=date.today() - timedelta(days=1))
+    )
+    await session.commit()
+
+    # 6. Complete booking
+    resp = await client.post(f"/api/v1/bookings/{booking_id}/complete", headers=_auth(token1))
+    assert resp.status_code == 200, f"Complete failed: {resp.json()}"
+    assert resp.json()["status"] == "completed"
+
+    # Verify credit awarded (+5 each, starting from 80 → 85)
+    profile1 = await client.get("/api/v1/users/me", headers=_auth(token1))
+    assert profile1.json()["credit_score"] == 85, "Creator should get +5 credit on complete"
+
+    profile2 = await client.get("/api/v1/users/me", headers=_auth(token2))
+    assert profile2.json()["credit_score"] == 85, "Joiner should get +5 credit on complete"
+
+    # 7. Review window open — both can submit reviews
+    resp = await client.post(
+        "/api/v1/reviews",
+        headers=_auth(token1),
+        json={
+            "booking_id": booking_id,
+            "reviewee_id": uid2,
+            "skill_rating": 4,
+            "punctuality_rating": 4,
+            "sportsmanship_rating": 4,
+        },
+    )
+    assert resp.status_code == 201, f"Review A→B failed: {resp.json()}"
+
+    resp = await client.post(
+        "/api/v1/reviews",
+        headers=_auth(token2),
+        json={
+            "booking_id": booking_id,
+            "reviewee_id": uid1,
+            "skill_rating": 4,
+            "punctuality_rating": 4,
+            "sportsmanship_rating": 4,
+        },
+    )
+    assert resp.status_code == 201, f"Review B→A failed: {resp.json()}"
+
+
+# ---------------------------------------------------------------------------
+# Test 8: Confirm booking creates chat room with correct participants
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_confirm_creates_chat_room_with_correct_participants(
+    client: AsyncClient, session: AsyncSession
+):
+    """After confirm, the chat room should contain only ACCEPTED participants."""
+    token1, uid1 = await _register_and_get_token(client, "chatroom_a")
+    token2, uid2 = await _register_and_get_token(client, "chatroom_b")
+    token3, uid3 = await _register_and_get_token(client, "chatroom_c")
+    court = await _seed_court(session)
+
+    # Create a doubles booking (max 4) so we can have 1 accepted + 1 rejected + creator
+    booking = await _create_booking_raw(client, token1, str(court.id), match_type="doubles")
+    booking_id = booking["id"]
+
+    # uid2 joins and gets ACCEPTED
+    resp = await client.post(f"/api/v1/bookings/{booking_id}/join", headers=_auth(token2))
+    assert resp.status_code == 200
+    resp = await client.patch(
+        f"/api/v1/bookings/{booking_id}/participants/{uid2}",
+        headers=_auth(token1),
+        json={"status": "accepted"},
+    )
+    assert resp.status_code == 200
+
+    # uid3 joins and gets REJECTED
+    resp = await client.post(f"/api/v1/bookings/{booking_id}/join", headers=_auth(token3))
+    assert resp.status_code == 200
+    resp = await client.patch(
+        f"/api/v1/bookings/{booking_id}/participants/{uid3}",
+        headers=_auth(token1),
+        json={"status": "rejected"},
+    )
+    assert resp.status_code == 200
+
+    # Confirm — chat room created with ACCEPTED participants only (uid1, uid2)
+    resp = await client.post(f"/api/v1/bookings/{booking_id}/confirm", headers=_auth(token1))
+    assert resp.status_code == 200, f"Confirm failed: {resp.json()}"
+    assert resp.json()["status"] == "confirmed"
+
+    # Query chat room
+    session.expire_all()
+    room_result = await session.execute(
+        select(ChatRoom).where(ChatRoom.booking_id == uuid.UUID(booking_id))
+    )
+    room = room_result.scalar_one_or_none()
+    assert room is not None, "Chat room should be created on confirm"
+    assert room.type == RoomType.GROUP, "Doubles booking should create GROUP chat room"
+
+    # Query participants of the room
+    participants_result = await session.execute(
+        select(ChatParticipant).where(ChatParticipant.room_id == room.id)
+    )
+    room_participant_ids = {str(p.user_id) for p in participants_result.scalars().all()}
+
+    assert uid1 in room_participant_ids, "Creator (ACCEPTED) should be in chat room"
+    assert uid2 in room_participant_ids, "Accepted joiner should be in chat room"
+    assert uid3 not in room_participant_ids, "Rejected participant should NOT be in chat room"
+
+
+# ---------------------------------------------------------------------------
+# Test 9: Cancel confirmed booking sets chat room readonly
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_cancel_booking_sets_chat_room_readonly(client: AsyncClient, session: AsyncSession):
+    """After a confirmed booking is cancelled by creator, its chat room becomes readonly."""
+    token1, uid1 = await _register_and_get_token(client, "cancel_room_a")
+    token2, uid2 = await _register_and_get_token(client, "cancel_room_b")
+    court = await _seed_court(session)
+
+    # Create, join, accept, confirm
+    booking = await _create_booking_raw(client, token1, str(court.id))
+    booking_id = booking["id"]
+
+    resp = await client.post(f"/api/v1/bookings/{booking_id}/join", headers=_auth(token2))
+    assert resp.status_code == 200
+    resp = await client.patch(
+        f"/api/v1/bookings/{booking_id}/participants/{uid2}",
+        headers=_auth(token1),
+        json={"status": "accepted"},
+    )
+    assert resp.status_code == 200
+    resp = await client.post(f"/api/v1/bookings/{booking_id}/confirm", headers=_auth(token1))
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "confirmed"
+
+    # Verify chat room exists and is writable
+    room_result = await session.execute(
+        select(ChatRoom).where(ChatRoom.booking_id == uuid.UUID(booking_id))
+    )
+    room = room_result.scalar_one_or_none()
+    assert room is not None, "Chat room should exist after confirm"
+    assert room.is_readonly is False, "Chat room should be writable before cancel"
+
+    # Cancel booking (creator cancels whole booking)
+    resp = await client.post(f"/api/v1/bookings/{booking_id}/cancel", headers=_auth(token1))
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "cancelled"
+
+    # Verify chat room is now readonly
+    session.expire_all()
+    room_result = await session.execute(
+        select(ChatRoom).where(ChatRoom.booking_id == uuid.UUID(booking_id))
+    )
+    room = room_result.scalar_one_or_none()
+    assert room is not None, "Chat room should still exist after cancel"
+    assert room.is_readonly is True, "Chat room should be readonly after booking cancellation"
+
+
+# ---------------------------------------------------------------------------
+# Test 10: Complete booking awards credit only to ACCEPTED participants
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_complete_booking_awards_credit_to_accepted_only(
+    client: AsyncClient, session: AsyncSession
+):
+    """On complete, only ACCEPTED participants receive +5 credit; REJECTED do not."""
+    from sqlalchemy import update
+
+    token1, uid1 = await _register_and_get_token(client, "credit_acc_a")
+    token2, uid2 = await _register_and_get_token(client, "credit_acc_b")
+    token3, uid3 = await _register_and_get_token(client, "credit_acc_c")
+    court = await _seed_court(session)
+
+    # Create doubles booking so we can have 3 participants with different statuses
+    booking = await _create_booking_raw(client, token1, str(court.id), match_type="doubles")
+    booking_id = booking["id"]
+
+    # uid2 joins and gets ACCEPTED
+    resp = await client.post(f"/api/v1/bookings/{booking_id}/join", headers=_auth(token2))
+    assert resp.status_code == 200
+    resp = await client.patch(
+        f"/api/v1/bookings/{booking_id}/participants/{uid2}",
+        headers=_auth(token1),
+        json={"status": "accepted"},
+    )
+    assert resp.status_code == 200
+
+    # uid3 joins and gets REJECTED
+    resp = await client.post(f"/api/v1/bookings/{booking_id}/join", headers=_auth(token3))
+    assert resp.status_code == 200
+    resp = await client.patch(
+        f"/api/v1/bookings/{booking_id}/participants/{uid3}",
+        headers=_auth(token1),
+        json={"status": "rejected"},
+    )
+    assert resp.status_code == 200
+
+    # Confirm with uid1 (creator, ACCEPTED) and uid2 (ACCEPTED) — 2 accepted is enough
+    resp = await client.post(f"/api/v1/bookings/{booking_id}/confirm", headers=_auth(token1))
+    assert resp.status_code == 200, f"Confirm failed: {resp.json()}"
+
+    # Backdate play_date to allow complete
+    await session.execute(
+        update(Booking)
+        .where(Booking.id == uuid.UUID(booking_id))
+        .values(play_date=date.today() - timedelta(days=1))
+    )
+    await session.commit()
+
+    # Complete booking
+    resp = await client.post(f"/api/v1/bookings/{booking_id}/complete", headers=_auth(token1))
+    assert resp.status_code == 200, f"Complete failed: {resp.json()}"
+    assert resp.json()["status"] == "completed"
+
+    # uid1 (ACCEPTED/creator) should get +5 → 85
+    profile1 = await client.get("/api/v1/users/me", headers=_auth(token1))
+    assert profile1.json()["credit_score"] == 85, "Creator (ACCEPTED) should get +5 credit"
+
+    # uid2 (ACCEPTED) should get +5 → 85
+    profile2 = await client.get("/api/v1/users/me", headers=_auth(token2))
+    assert profile2.json()["credit_score"] == 85, "Accepted joiner should get +5 credit"
+
+    # uid3 (REJECTED) should NOT get credit — stays at 80
+    profile3 = await client.get("/api/v1/users/me", headers=_auth(token3))
+    assert profile3.json()["credit_score"] == 80, "Rejected participant should NOT get credit"
