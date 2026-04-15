@@ -1,86 +1,67 @@
-# CLAUDE.md
-
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Project
 
-**Let's Tennis** — a tennis social/matchmaking app backend. FastAPI monolith with modular router structure, targeting Traditional Chinese (zh-Hant) as default locale with zh-Hans and English support.
+**Let's Tennis** — tennis social/matchmaking app backend. FastAPI monolith. Default locale: zh-Hant (also zh-Hans, English).
 
 ## Commands
 
 ```bash
-# Dependencies (always use uv, never pip/poetry)
-uv add <package>
-uv add --dev <package>
-
-# Run server
-uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
-
-# Run all tests (requires local PostgreSQL with lets_tennis_test database)
-uv run pytest tests/ -v
-
-# Run a single test file
-uv run pytest tests/test_auth.py -v
-
-# Run a single test function
-uv run pytest tests/test_auth.py::test_login_username -v
-
-# Alembic migrations
-uv run alembic revision --autogenerate -m "description"
+uv add <package>                                          # never pip/poetry
+uv run uvicorn app.main:app --host 0.0.0.0 --port 8000   # server
+uv run pytest tests/ -v                                   # all tests (needs lets_tennis_test DB)
+uv run pytest tests/test_auth.py::test_login_username -v  # single test
+uv run alembic revision --autogenerate -m "description"   # migration
 uv run alembic upgrade head
 ```
 
 ## Architecture
 
-### Request flow
-`Router → Dependencies (auth/db/lang) → Service → SQLAlchemy Model → PostgreSQL`
+**Request flow:** `Router → Dependencies (auth/db/lang) → Service → SQLAlchemy Model → PostgreSQL`
 
-### Key patterns
+### Core
 
-- **App factory**: `app/main.py` — `create_app()` constructs the FastAPI app, registers routers under `/api/v1/` prefix
-- **Dependency injection**: `app/dependencies.py` — use `DbSession`, `CurrentUser`, and `Lang` type aliases in router function signatures
-- **Auth**: JWT Bearer tokens (access + refresh). `services/auth.py` handles token creation/validation, password hashing. Auth info is stored in `UserAuth` (multi-provider: username, phone, WeChat, Google) linked to `User` via foreign key
-- **Multi-provider auth model**: One `User` can have multiple `UserAuth` rows (one per provider). Lookup is by `(provider, provider_user_id)` unique constraint
-- **Credit score system**: `services/credit.py` — bounded [0, 100], first cancellation is warning-only (no deduction), tracked via `cancel_count` on User
-- **Booking system**: `services/booking.py` + `routers/bookings.py` — post-a-match flow with lifecycle (open → confirmed → completed/cancelled). Creator auto-joins as accepted participant. Cancellation penalty calculated automatically from play datetime. Completion awards +5 credit to all accepted participants.
-- **Courts**: `services/court.py` + `routers/courts.py` — hybrid model: admin-seeded courts (approved) + user-submitted courts (unapproved until reviewed). Only approved courts appear in listings and can be used for bookings.
-- **Review system**: `services/review.py` + `routers/reviews.py` — post-booking peer review with double-blind reveal. Three rating dimensions (skill, punctuality, sportsmanship) + optional comment. Reviews only visible to both parties after both submit. 24h window from booking completion. `is_hidden` used by Report/Block module to hide content.
-- **Report system**: `services/report.py` + `routers/reports.py` — users report abusive content (reviews or users). Polymorphic target: `target_type` (user/review) + `target_id` (always populated). Reasons: no_show, harassment, false_info, inappropriate, other. Admins resolve reports via `/api/v1/admin/reports` with escalating actions: dismissed, warned, content_hidden (sets Review.is_hidden=True), suspended (sets User.is_suspended=True). Unique constraint: one report per (reporter, target_type, target_id).
-- **Block system**: `services/block.py` + `routers/blocks.py` — symmetric and silent blocking. When A blocks B: mutual reviews hidden (is_hidden=True), B can't join A's bookings (and vice versa), blocked users' bookings hidden from each other's listings, new reviews between blocked pairs rejected. Unblock is hard delete; hidden reviews are NOT auto-restored. `is_blocked()` helper checks both directions.
-- **Follow system**: `services/follow.py` + `routers/follows.py` — unidirectional follow with mutual (friend) detection. `is_mutual` computed at read time by checking reverse follow exists. Block integration: blocked users cannot follow each other, existing follows removed on block creation. Unfollow is hard delete; follows NOT restored on unblock.
-- **Notification system**: `services/notification.py` + `routers/notifications.py` — in-app notifications created by direct service calls at trigger points. Covers booking events (joined/accepted/rejected/cancelled/confirmed/completed), follow/mutual, review blind reveal, admin report resolution (resolved/warned/suspended), and ideal player status changes (gained/lost). No push delivery; iOS client polls REST API. `NotificationType` enum defines all 18 event types (including 4 matching types: proposal received/accepted/rejected, match suggestion). `create_notification()` is internal-only (not exposed via router).
-- **Suspension**: `is_suspended` field on User model, checked in `get_current_user` dependency — all protected endpoints reject suspended users with 403.
-- **Admin dependency**: `AdminUser` type alias in `dependencies.py` — chains on `CurrentUser`, requires `UserRole.admin` or `UserRole.superadmin`.
-- **i18n**: `app/i18n.py` — simple dict-based translations, `t(key, lang)` function. Language determined via `Accept-Language` header
-- **Booking assistant (约球助理)**: `services/llm.py` + `services/assistant.py` + `routers/assistant.py` — AI-powered natural language booking form filler. User inputs free text, backend calls LLM (Claude Sonnet via protocol-based adapter, configurable via `LLM_PROVIDER`) to parse into structured booking fields, then fuzzy-matches court keywords against Court table. Returns pre-filled form data; final submission still goes through `create_booking`. Rate-limited per user via Redis (`ASSISTANT_RATE_LIMIT`). Adding new providers (Gemini, OpenAI) = implement `LLMProvider` protocol + register in `_PROVIDERS` dict.
-- **Ideal player (理想球友)**: `services/ideal_player.py` — reputation badge system. `is_ideal_player` bool on User model, evaluated on events (booking complete, review submit, credit change). Conditions: credit_score ≥ 90, cancel_count == 0, ≥ 10 completed bookings, avg review ≥ 4.0. All four must be met. Auto-demoted when any condition fails. Ideal players get priority sort in booking listings (`ORDER BY is_ideal_player DESC`). Notifications on status change (`IDEAL_PLAYER_GAINED`/`IDEAL_PLAYER_LOST`).
-- **Smart matching (智能匹配)**: `services/matching.py` + `services/match_proposal.py` + `routers/matching.py` — player matchmaking system. Users create `MatchPreference` (NTRP range, gender, time slots, preferred courts, max distance). Candidate search uses weighted scoring (0-100): NTRP proximity (35%), time overlap (25%), court overlap (20%), credit score (10%), gender match (5%), ideal player (5%). Hard filters exclude blocked users, inactive preferences, NTRP gap > 1.5, and zero time overlap. `MatchProposal` lifecycle: pending → accepted/rejected/expired (48h lazy expiry). Accepting a proposal auto-creates a booking with both users as participants. Daily proposal cap: 5 per user. Passive matching: `trigger_passive_matching()` fires on preference create/update/toggle, sends `MATCH_SUGGESTION` notifications (score ≥ 60, max 3 per event, 7-day cooldown per pair). Block integration: pending proposals auto-expired when a block is created. Booking recommendations: finds open bookings matching user's preferences. Models: `MatchPreference`, `MatchTimeSlot`, `MatchPreferenceCourt`, `MatchProposal` in `models/matching.py`.
-- **Weather (天气)**: `services/weather.py` + `routers/weather.py` — QWeather API integration. GPS-coordinate weather via court's lat/lon. Redis cache with TTL by date proximity (30min/1h/3h). Alert thresholds: typhoon/rainstorm warnings, rain ≥80%, temp ≥38°C trigger `allows_free_cancel`. `check_free_cancel()` called from `cancel_booking()` to waive credit penalty using `CreditReason.WEATHER_CANCEL`. Standalone `GET /api/v1/weather` endpoint.
-- **Roles**: `UserRole` enum on User model — `user`, `admin`, `superadmin`
+- **App factory**: `app/main.py` — `create_app()`, routers under `/api/v1/`
+- **DI**: `app/dependencies.py` — `DbSession`, `CurrentUser`, `Lang`, `AdminUser` (requires `admin`/`superadmin`)
+- **Auth**: JWT (access + refresh). `services/auth.py`. Multi-provider `UserAuth` keyed on `(provider, provider_user_id)`
+- **i18n**: `app/i18n.py` — `t(key, lang)`, from `Accept-Language` header
+- **Roles**: `UserRole` — `user`, `admin`, `superadmin`. Suspension via `is_suspended` → 403
+
+### Modules
+
+`services/<name>.py` + `routers/<name>.py` unless noted.
+
+| Module | Key files | Summary |
+|--------|-----------|---------|
+| Booking | `booking.py` | Lifecycle: `open → confirmed → completed/cancelled`. Creator auto-joins. |
+| Courts | `court.py` | Admin-approved + user-submitted. Only approved usable. |
+| Credit | `credit.py` (svc only) | Score [0,100]. First cancel = warning. |
+| Review | `review.py` | Post-booking, double-blind reveal. 3 dimensions + comment. 24h window. `is_hidden` flag. |
+| Report | `report.py` | Polymorphic target (`target_type` + `target_id`). Admin resolve at `/api/v1/admin/reports`. |
+| Block | `block.py` | Symmetric + silent. `is_blocked(session, a, b)` checks both directions. Hard delete on unblock. |
+| Follow | `follow.py` | Unidirectional, mutual detected at read time. Removed on block. |
+| Notification | `notification.py` | In-app polling (no push). 18 types. `create_notification()` internal-only. |
+| Ideal Player 理想球友 | `ideal_player.py` (svc only) | Auto-evaluated badge on User. Priority sort in listings. |
+| Assistant 约球助理 | `llm.py` + `assistant.py` | NL → booking fields via LLM. Add providers: implement `LLMProvider` protocol. |
+| Matching 智能匹配 | `matching.py` + `match_proposal.py` | `MatchPreference` → scored candidates → `MatchProposal` (pending/accepted/rejected/expired). Accept = auto-create booking. |
+| Weather 天气 | `weather.py` | QWeather API, Redis-cached. Bad weather → `allows_free_cancel` (waives credit penalty). |
+| Chat 聊天 | `chat.py` | WebSocket + REST. Auto-created rooms on booking confirm. `ConnectionManager` for WS. |
 
 ### Database
 
-- **ORM**: SQLAlchemy async with `asyncpg` driver
-- **Models inherit from**: `app.database.Base` (DeclarativeBase)
-- **Migrations**: Alembic with async engine (configured in `alembic/env.py`)
-- **Databases**: `lets_tennis` (dev), `lets_tennis_test` (tests)
-- **Config**: `app/config.py` — `pydantic-settings` loading from `.env`
+- SQLAlchemy async + `asyncpg`. Models inherit `app.database.Base`
+- Alembic async migrations. DBs: `lets_tennis` / `lets_tennis_test`
+- Config: `app/config.py` — `pydantic-settings` from `.env`
 
 ### Testing
 
-- Tests use a separate PostgreSQL database (`lets_tennis_test`) — not mocks
-- `tests/conftest.py` provides `session` and `client` fixtures that create/drop all tables per test function
-- `client` fixture overrides `get_session` dependency to use the test session
-- pytest-asyncio with `asyncio_mode = "auto"` (no need for `@pytest.mark.asyncio` decorator, but existing tests use it)
+- Real PostgreSQL (`lets_tennis_test`), not mocks
+- `conftest.py`: `session` + `client` fixtures, tables created/dropped per test
+- `asyncio_mode = "auto"`
 
 ## Conventions
 
-- NTRP levels are strings like `"3.5"`, `"3.5+"`, `"4.0-"` — the `generate_ntrp_label()` function in `services/auth.py` produces display labels. `_ntrp_to_float()` in `services/booking.py` converts these to floats for range comparison.
-- All API error messages should use the `t()` i18n function for user-facing text
-- Pydantic schemas use `model_config = {"from_attributes": True}` for ORM compatibility
-- Booking validation: credit_score ≥ 60 to create, NTRP range check + gender requirement + capacity check to join
-- Booking status state machine: `open → confirmed → completed/cancelled`. Only creator can confirm/complete. Cancel calculates penalty tier automatically (≥24h: -1, 12-24h: -2, <12h: -5, first cancel is always warning-only).
-- Review validation: booking must be completed, both parties must be accepted participants, cannot self-review, 24h window from completion, no duplicates. Blind reveal: review visible to reviewee only after reviewee also submits their review for the same booking.
-- Block validation: cannot block yourself (400), duplicate block (409). Block enforcement is symmetric — `is_blocked(session, a, b)` checks both directions. Unblock only by blocker, hard delete. Hidden reviews not auto-restored on unblock.
-- Report validation: cannot report yourself (400), duplicate report per (reporter, target_type, target_id) (409), cannot report already-hidden review (400). `content_hidden` resolution only valid for review targets (400 if user target). Admin resolve requires pending status.
-- Service error convention: `ValueError` → 400, `LookupError` → 409, `PermissionError` → 403 in router exception handlers.
+- **Errors**: `ValueError` → 400, `LookupError` → 409, `PermissionError` → 403
+- **NTRP**: strings (`"3.5"`, `"3.5+"`, `"4.0-"`). See `generate_ntrp_label()`, `_ntrp_to_float()`
+- **i18n**: all user-facing errors via `t()`
+- **Schemas**: `model_config = {"from_attributes": True}`
+- **Blocks**: always symmetric — `is_blocked(session, a, b)` covers both directions
