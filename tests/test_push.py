@@ -1,6 +1,13 @@
+import json
+import uuid
+
 import pytest
 
+from unittest.mock import AsyncMock, MagicMock
+
 from app.i18n import t
+from app.models.notification import Notification, NotificationType
+from app.services.push import PUSHABLE_TYPES, enqueue_push
 
 
 PUSH_TYPES = [
@@ -31,3 +38,83 @@ async def test_push_i18n_body_exists(ntype: str):
         key = f"push.{ntype}.body"
         result = t(key, lang)
         assert result != key, f"Missing i18n key: {key} for lang={lang}"
+
+
+def _make_notification(
+    type: NotificationType,
+    recipient_id: uuid.UUID | None = None,
+    actor_id: uuid.UUID | None = None,
+    target_type: str | None = None,
+    target_id: uuid.UUID | None = None,
+) -> Notification:
+    n = Notification(
+        id=uuid.uuid4(),
+        recipient_id=recipient_id or uuid.uuid4(),
+        actor_id=actor_id,
+        type=type,
+        target_type=target_type,
+        target_id=target_id,
+    )
+    return n
+
+
+@pytest.mark.asyncio
+async def test_enqueue_push_pushable_type():
+    redis = AsyncMock()
+    notification = _make_notification(NotificationType.BOOKING_CONFIRMED, target_type="booking", target_id=uuid.uuid4())
+    result = await enqueue_push(redis, notification)
+    assert result is True
+    redis.lpush.assert_called_once()
+    payload = json.loads(redis.lpush.call_args[0][1])
+    assert payload["type"] == "booking_confirmed"
+
+
+@pytest.mark.asyncio
+async def test_enqueue_push_non_pushable_type():
+    redis = AsyncMock()
+    notification = _make_notification(NotificationType.NEW_FOLLOWER)
+    result = await enqueue_push(redis, notification)
+    assert result is False
+    redis.lpush.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_enqueue_push_chat_skips_when_online():
+    redis = AsyncMock()
+    recipient_id = uuid.uuid4()
+    notification = _make_notification(NotificationType.NEW_CHAT_MESSAGE, recipient_id=recipient_id)
+
+    ws_manager = MagicMock()
+    ws_manager.connections = {recipient_id: MagicMock()}
+
+    result = await enqueue_push(redis, notification, ws_manager=ws_manager)
+    assert result is False
+    redis.lpush.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_enqueue_push_chat_sends_when_offline():
+    redis = AsyncMock()
+    recipient_id = uuid.uuid4()
+    notification = _make_notification(NotificationType.NEW_CHAT_MESSAGE, recipient_id=recipient_id)
+
+    ws_manager = MagicMock()
+    ws_manager.connections = {}
+
+    result = await enqueue_push(redis, notification, ws_manager=ws_manager)
+    assert result is True
+    redis.lpush.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_enqueue_push_chat_sends_when_no_manager():
+    redis = AsyncMock()
+    notification = _make_notification(NotificationType.NEW_CHAT_MESSAGE)
+    result = await enqueue_push(redis, notification, ws_manager=None)
+    assert result is True
+    redis.lpush.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_pushable_types_count():
+    assert len(PUSHABLE_TYPES) == 8
