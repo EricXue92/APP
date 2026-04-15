@@ -28,6 +28,7 @@ class NotificationType(str, enum.Enum):
     MATCH_PROPOSAL_ACCEPTED = "match_proposal_accepted"
     MATCH_PROPOSAL_REJECTED = "match_proposal_rejected"
     MATCH_SUGGESTION = "match_suggestion"
+    NEW_CHAT_MESSAGE = "new_chat_message"
 
 
 class Notification(Base):
