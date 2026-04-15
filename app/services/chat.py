@@ -61,6 +61,7 @@ async def get_room_by_booking_id(session: AsyncSession, booking_id: uuid.UUID) -
             selectinload(ChatRoom.participants).selectinload(ChatParticipant.user),
         )
         .where(ChatRoom.booking_id == booking_id)
+        .execution_options(populate_existing=True)
     )
     return result.scalar_one_or_none()
 

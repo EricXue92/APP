@@ -20,7 +20,7 @@ from app.models.notification import NotificationType
 from app.models.user import Gender, User
 from app.services.credit import apply_credit_change
 from app.services.notification import create_notification
-from app.services.chat import create_chat_room
+from app.services.chat import create_chat_room, set_room_readonly, add_participant, remove_participant, get_room_by_booking_id
 from app.services.weather import check_free_cancel
 
 
@@ -233,6 +233,7 @@ async def cancel_booking(session: AsyncSession, booking: Booking, user: User) ->
 
     if user.id == booking.creator_id:
         booking.status = BookingStatus.CANCELLED
+        await set_room_readonly(session, booking_id=booking.id)
         # Notify all accepted/pending participants (except creator)
         for p in booking.participants:
             if p.user_id != user.id and p.status in (ParticipantStatus.PENDING, ParticipantStatus.ACCEPTED):
@@ -306,6 +307,15 @@ async def update_participant_status(
                     target_type="booking",
                     target_id=booking.id,
                 )
+            # Sync chat room participant
+            if new_status == "accepted":
+                room = await get_room_by_booking_id(session, booking.id)
+                if room:
+                    await add_participant(session, room_id=room.id, user_id=user_id)
+            elif new_status == "rejected":
+                room = await get_room_by_booking_id(session, booking.id)
+                if room:
+                    await remove_participant(session, room_id=room.id, user_id=user_id)
             await session.commit()
             await session.refresh(p)
             return p

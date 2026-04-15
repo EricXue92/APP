@@ -485,3 +485,70 @@ async def test_confirm_booking_creates_chat_room(client: AsyncClient, session: A
     assert room is not None
     assert room.type == RoomType.PRIVATE
     assert len(room.participants) == 2
+
+
+@pytest.mark.asyncio
+async def test_cancel_booking_sets_room_readonly(client: AsyncClient, session: AsyncSession):
+    token1, token2, uid1, uid2, booking_id, room = await _setup_confirmed_booking_with_room(client, session)
+
+    assert room.is_readonly is False
+
+    resp = await client.post(f"/api/v1/bookings/{booking_id}/cancel", headers={"Authorization": f"Bearer {token1}"})
+    assert resp.status_code == 200
+
+    await session.refresh(room)
+    assert room.is_readonly is True
+
+
+@pytest.mark.asyncio
+async def test_participant_accepted_after_room_exists(client: AsyncClient, session: AsyncSession):
+    """For doubles: a late-accepted participant should be added to the chat room."""
+    token1, uid1 = await _register_and_get_token(client, "dbl_user1")
+    token2, uid2 = await _register_and_get_token(client, "dbl_user2")
+    token3, uid3 = await _register_and_get_token(client, "dbl_user3")
+    court = await _seed_court(session)
+
+    # Create doubles booking
+    resp = await client.post(
+        "/api/v1/bookings",
+        headers={"Authorization": f"Bearer {token1}"},
+        json={
+            "court_id": str(court.id),
+            "match_type": "doubles",
+            "play_date": (date.today() + timedelta(days=7)).isoformat(),
+            "start_time": "10:00:00",
+            "end_time": "12:00:00",
+            "min_ntrp": "3.0",
+            "max_ntrp": "4.0",
+        },
+    )
+    booking_id = resp.json()["id"]
+
+    # User2 and User3 join while booking is still OPEN
+    await client.post(f"/api/v1/bookings/{booking_id}/join", headers={"Authorization": f"Bearer {token2}"})
+    await client.post(f"/api/v1/bookings/{booking_id}/join", headers={"Authorization": f"Bearer {token3}"})
+
+    # Accept user2 only
+    await client.patch(
+        f"/api/v1/bookings/{booking_id}/participants/{uid2}",
+        headers={"Authorization": f"Bearer {token1}"},
+        json={"status": "accepted"},
+    )
+
+    # Confirm with 2 accepted players (creator + user2) → room created
+    await client.post(f"/api/v1/bookings/{booking_id}/confirm", headers={"Authorization": f"Bearer {token1}"})
+
+    room = await get_room_by_booking_id(session, uuid.UUID(booking_id))
+    assert len(room.participants) == 2
+
+    # Accept user3 AFTER room exists → should be added to chat room
+    await client.patch(
+        f"/api/v1/bookings/{booking_id}/participants/{uid3}",
+        headers={"Authorization": f"Bearer {token1}"},
+        json={"status": "accepted"},
+    )
+
+    # Expire cached objects so we get fresh data from DB
+    session.expire_all()
+    room = await get_room_by_booking_id(session, uuid.UUID(booking_id))
+    assert len(room.participants) == 3
