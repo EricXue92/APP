@@ -275,3 +275,164 @@ async def test_image_message_skips_word_filter(session: AsyncSession):
     # Image content containing blocked word in URL should NOT be filtered
     msg = await send_message(session, room_id=room.id, sender_id=user1.id, type="image", content="https://example.com/傻逼.jpg")
     assert msg.type.value == "image"
+
+
+# --- REST API Tests ---
+
+async def _register_and_get_token(client: AsyncClient, username: str) -> tuple[str, str]:
+    resp = await client.post(
+        "/api/v1/auth/register/username",
+        params={
+            "nickname": f"Player_{username}",
+            "gender": "male",
+            "city": "Hong Kong",
+            "ntrp_level": "3.5",
+            "language": "en",
+        },
+        json={"username": username, "password": "pass1234", "email": f"{username}@example.com"},
+    )
+    data = resp.json()
+    return data["access_token"], data["user_id"]
+
+
+async def _seed_court(session: AsyncSession) -> Court:
+    court = Court(
+        name="Test Court",
+        address="123 Tennis Rd",
+        city="Hong Kong",
+        court_type=CourtType.OUTDOOR,
+        is_approved=True,
+    )
+    session.add(court)
+    await session.commit()
+    await session.refresh(court)
+    return court
+
+
+async def _setup_confirmed_booking_with_room(client: AsyncClient, session: AsyncSession):
+    """Create two users, a confirmed booking, and the chat room. Returns (token1, token2, user1_id, user2_id, booking_id, room)."""
+    token1, uid1 = await _register_and_get_token(client, "chat_user1")
+    token2, uid2 = await _register_and_get_token(client, "chat_user2")
+    court = await _seed_court(session)
+
+    # Create booking
+    resp = await client.post(
+        "/api/v1/bookings",
+        headers={"Authorization": f"Bearer {token1}"},
+        json={
+            "court_id": str(court.id),
+            "match_type": "singles",
+            "play_date": (date.today() + timedelta(days=7)).isoformat(),
+            "start_time": "10:00:00",
+            "end_time": "12:00:00",
+            "min_ntrp": "3.0",
+            "max_ntrp": "4.0",
+        },
+    )
+    booking_id = resp.json()["id"]
+
+    # User2 joins
+    await client.post(
+        f"/api/v1/bookings/{booking_id}/join",
+        headers={"Authorization": f"Bearer {token2}"},
+    )
+    # Creator accepts user2
+    await client.patch(
+        f"/api/v1/bookings/{booking_id}/participants/{uid2}",
+        headers={"Authorization": f"Bearer {token1}"},
+        json={"status": "accepted"},
+    )
+    # Confirm booking → triggers chat room creation
+    await client.post(
+        f"/api/v1/bookings/{booking_id}/confirm",
+        headers={"Authorization": f"Bearer {token1}"},
+    )
+
+    from app.services.chat import get_room_by_booking_id
+    room = await get_room_by_booking_id(session, uuid.UUID(booking_id))
+    return token1, token2, uid1, uid2, booking_id, room
+
+
+@pytest.mark.asyncio
+async def test_list_rooms_api(client: AsyncClient, session: AsyncSession):
+    token1, token2, uid1, uid2, booking_id, room = await _setup_confirmed_booking_with_room(client, session)
+
+    resp = await client.get("/api/v1/chat/rooms", headers={"Authorization": f"Bearer {token1}"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) == 1
+    assert data[0]["id"] == str(room.id)
+    assert data[0]["unread_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_send_message_rest_api(client: AsyncClient, session: AsyncSession):
+    token1, token2, uid1, uid2, booking_id, room = await _setup_confirmed_booking_with_room(client, session)
+
+    resp = await client.post(
+        f"/api/v1/chat/rooms/{room.id}/messages",
+        headers={"Authorization": f"Bearer {token1}"},
+        json={"type": "text", "content": "Hello from REST!"},
+    )
+    assert resp.status_code == 201
+    assert resp.json()["content"] == "Hello from REST!"
+
+
+@pytest.mark.asyncio
+async def test_get_messages_api(client: AsyncClient, session: AsyncSession):
+    token1, token2, uid1, uid2, booking_id, room = await _setup_confirmed_booking_with_room(client, session)
+
+    # Send a message first
+    await client.post(
+        f"/api/v1/chat/rooms/{room.id}/messages",
+        headers={"Authorization": f"Bearer {token1}"},
+        json={"type": "text", "content": "Test message"},
+    )
+
+    resp = await client.get(
+        f"/api/v1/chat/rooms/{room.id}/messages",
+        headers={"Authorization": f"Bearer {token1}"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) == 1
+    assert data[0]["content"] == "Test message"
+
+
+@pytest.mark.asyncio
+async def test_mark_read_api(client: AsyncClient, session: AsyncSession):
+    token1, token2, uid1, uid2, booking_id, room = await _setup_confirmed_booking_with_room(client, session)
+
+    # Send message as user1
+    await client.post(
+        f"/api/v1/chat/rooms/{room.id}/messages",
+        headers={"Authorization": f"Bearer {token1}"},
+        json={"type": "text", "content": "Hello"},
+    )
+
+    # User2 has 1 unread
+    resp = await client.get("/api/v1/chat/rooms", headers={"Authorization": f"Bearer {token2}"})
+    assert resp.json()[0]["unread_count"] == 1
+
+    # Mark read
+    resp = await client.post(
+        f"/api/v1/chat/rooms/{room.id}/read",
+        headers={"Authorization": f"Bearer {token2}"},
+    )
+    assert resp.status_code == 200
+
+    # Unread now 0
+    resp = await client.get("/api/v1/chat/rooms", headers={"Authorization": f"Bearer {token2}"})
+    assert resp.json()[0]["unread_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_send_blocked_word_rest_api(client: AsyncClient, session: AsyncSession):
+    token1, token2, uid1, uid2, booking_id, room = await _setup_confirmed_booking_with_room(client, session)
+
+    resp = await client.post(
+        f"/api/v1/chat/rooms/{room.id}/messages",
+        headers={"Authorization": f"Bearer {token1}"},
+        json={"type": "text", "content": "你是傻逼"},
+    )
+    assert resp.status_code == 400

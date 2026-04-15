@@ -354,6 +354,26 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "zh-Hant": "天氣服務暫時不可用",
         "en": "Weather service temporarily unavailable",
     },
+    "chat.room_not_found": {
+        "zh-Hans": "聊天室不存在",
+        "zh-Hant": "聊天室不存在",
+        "en": "Chat room not found",
+    },
+    "chat.not_participant": {
+        "zh-Hans": "你不是该聊天室的成员",
+        "zh-Hant": "你不是該聊天室的成員",
+        "en": "You are not a participant of this chat room",
+    },
+    "chat.room_readonly": {
+        "zh-Hans": "该聊天室已设为只读",
+        "zh-Hant": "該聊天室已設為唯讀",
+        "en": "This chat room is read-only",
+    },
+    "chat.blocked_word": {
+        "zh-Hans": "消息包含不当内容",
+        "zh-Hant": "訊息包含不當內容",
+        "en": "Message contains inappropriate content",
+    },
 }
 
 
