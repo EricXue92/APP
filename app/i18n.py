@@ -239,6 +239,16 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "zh-Hant": "操作被拒絕",
         "en": "Action not allowed",
     },
+    "assistant.rate_limit": {
+        "zh-Hans": "请求过于频繁，请稍后再试",
+        "zh-Hant": "請求過於頻繁，請稍後再試",
+        "en": "Too many requests, please try again later",
+    },
+    "assistant.llm_error": {
+        "zh-Hans": "AI 服务暂时不可用",
+        "zh-Hant": "AI 服務暫時不可用",
+        "en": "AI service temporarily unavailable",
+    },
 }
 
 
