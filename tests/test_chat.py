@@ -637,14 +637,15 @@ async def test_admin_delete_message(client: AsyncClient, session: AsyncSession):
         f"/api/v1/admin/chat/messages/{msg_id}",
         headers={"Authorization": f"Bearer {token1}"},
     )
-    assert resp.status_code == 200
+    assert resp.status_code == 204
 
-    # Verify message is soft-deleted
+    # Verify message is no longer in the room's message list
     resp = await client.get(
         f"/api/v1/chat/rooms/{room.id}/messages",
         headers={"Authorization": f"Bearer {token1}"},
     )
-    assert resp.json()[0]["is_deleted"] is True
+    msg_ids = [m["id"] for m in resp.json()]
+    assert msg_id not in msg_ids
 
 
 @pytest.mark.asyncio
