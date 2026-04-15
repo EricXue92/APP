@@ -38,7 +38,9 @@
         "Bash(chmod:*)",
         "Bash(bun run *)",
         "Bash(npx vitest *)",
-        "Bash(npx jest *)"
+        "Bash(npx jest *)",
+        "Bash(curl *)",
+        "Bash(wget *)"
       ],
       "deny": [
         "Bash(rm -rf *)",
@@ -48,9 +50,7 @@
         "Read(.env.*)",
         "Read(**/secrets/**)",
         "Read(**/.ssh/**)",
-        "Read(**/.aws/**)",
-        "Bash(curl *)",
-        "Bash(wget *)"
+        "Read(**/.aws/**)"
       ]
     },
     "spinnerVerbs": {

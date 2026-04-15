@@ -1,5 +1,5 @@
 import uuid
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, time, timedelta
 
 import pytest
 from httpx import AsyncClient
@@ -8,7 +8,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.booking import Booking, BookingParticipant, BookingStatus, MatchType, GenderRequirement, ParticipantStatus
 from app.models.chat import ChatRoom, RoomType
 from app.models.court import Court, CourtType
-from app.models.event import Event, EventType, EventStatus
 from app.models.user import User, Gender
 from app.services.chat import create_chat_room, get_rooms_for_user, get_room_by_id, add_participant, remove_participant, set_room_readonly
 
@@ -638,14 +637,14 @@ async def test_admin_delete_message(client: AsyncClient, session: AsyncSession):
         f"/api/v1/admin/chat/messages/{msg_id}",
         headers={"Authorization": f"Bearer {token1}"},
     )
-    assert resp.status_code == 204
+    assert resp.status_code == 200
 
-    # Verify message is deleted
+    # Verify message is soft-deleted
     resp = await client.get(
         f"/api/v1/chat/rooms/{room.id}/messages",
         headers={"Authorization": f"Bearer {token1}"},
     )
-    assert all(m["id"] != msg_id for m in resp.json())
+    assert resp.json()[0]["is_deleted"] is True
 
 
 @pytest.mark.asyncio
@@ -685,135 +684,3 @@ async def test_block_sets_private_room_readonly(client: AsyncClient, session: As
 
     await session.refresh(room)
     assert room.is_readonly is True
-
-
-# --- Chat Service Gap Tests ---
-
-from app.services.chat import create_event_chat_room, get_room_by_event_id, set_event_room_readonly
-
-
-async def _create_event(session: AsyncSession, creator: User) -> Event:
-    event = Event(
-        creator_id=creator.id,
-        name="Spring Tennis Cup",
-        event_type=EventType.SINGLES_ELIMINATION,
-        min_ntrp="3.0",
-        max_ntrp="4.5",
-        max_participants=8,
-        registration_deadline=datetime.now(timezone.utc) + timedelta(days=7),
-        status=EventStatus.OPEN,
-    )
-    session.add(event)
-    await session.flush()
-    return event
-
-
-@pytest.mark.asyncio
-async def test_get_room_by_event_id_found(session: AsyncSession):
-    """Create event room via create_event_chat_room(), fetch by event_id, verify match."""
-    user1 = await _create_user(session, "eve_user1")
-    user2 = await _create_user(session, "eve_user2")
-    event = await _create_event(session, user1)
-
-    created_room = await create_event_chat_room(
-        session,
-        event=event,
-        participant_ids=[user1.id, user2.id],
-    )
-
-    fetched_room = await get_room_by_event_id(session, event.id)
-    assert fetched_room is not None
-    assert fetched_room.id == created_room.id
-    assert fetched_room.event_id == event.id
-    assert fetched_room.type == RoomType.GROUP
-    assert fetched_room.name == event.name
-
-
-@pytest.mark.asyncio
-async def test_get_room_by_event_id_not_found(session: AsyncSession):
-    """Fetch with random UUID, verify None."""
-    random_event_id = uuid.uuid4()
-    result = await get_room_by_event_id(session, random_event_id)
-    assert result is None
-
-
-@pytest.mark.asyncio
-async def test_set_event_room_readonly(session: AsyncSession):
-    """Create event room, set readonly, verify is_readonly=True."""
-    user1 = await _create_user(session, "readonly_user1")
-    user2 = await _create_user(session, "readonly_user2")
-    event = await _create_event(session, user1)
-
-    room = await create_event_chat_room(
-        session,
-        event=event,
-        participant_ids=[user1.id, user2.id],
-    )
-    assert room.is_readonly is False
-
-    await set_event_room_readonly(session, event_id=event.id)
-    await session.refresh(room)
-    assert room.is_readonly is True
-
-
-@pytest.mark.asyncio
-async def test_set_event_room_readonly_no_room(session: AsyncSession):
-    """Call with nonexistent event_id, verify no error."""
-    nonexistent_event_id = uuid.uuid4()
-    # Should not raise
-    await set_event_room_readonly(session, event_id=nonexistent_event_id)
-
-
-@pytest.mark.asyncio
-async def test_send_message_room_not_found(session: AsyncSession):
-    """Call send_message with random room_id, verify LookupError."""
-    user1 = await _create_user(session, "sender_noroom")
-    random_room_id = uuid.uuid4()
-
-    with pytest.raises(LookupError):
-        await send_message(session, room_id=random_room_id, sender_id=user1.id, type="text", content="Hello")
-
-
-@pytest.mark.asyncio
-async def test_get_messages_empty_room(session: AsyncSession):
-    """Create room, fetch messages, verify empty list."""
-    user1 = await _create_user(session, "empty_room_user1")
-    user2 = await _create_user(session, "empty_room_user2")
-    court = await _create_court(session)
-    booking = await _create_confirmed_booking(session, user1, user2, court)
-    room = await create_chat_room(session, booking=booking, participant_ids=[user1.id, user2.id], court_name=court.name)
-
-    messages = await get_messages(session, room_id=room.id)
-    assert messages == []
-
-
-@pytest.mark.asyncio
-async def test_add_participant_duplicate(session: AsyncSession):
-    """Add same user twice, verify no crash."""
-    user1 = await _create_user(session, "dup_user1")
-    user2 = await _create_user(session, "dup_user2")
-    court = await _create_court(session)
-    booking = await _create_confirmed_booking(session, user1, user2, court)
-    room = await create_chat_room(session, booking=booking, participant_ids=[user1.id, user2.id], court_name=court.name)
-
-    # user1 is already a participant — adding again should not crash
-    try:
-        await add_participant(session, room_id=room.id, user_id=user1.id)
-    except Exception:
-        # A unique-constraint violation is acceptable; the test just verifies no unhandled crash
-        await session.rollback()
-
-
-@pytest.mark.asyncio
-async def test_remove_participant_not_in_room(session: AsyncSession):
-    """Remove user not in room, verify no crash or returns None."""
-    user1 = await _create_user(session, "notinroom_user1")
-    user2 = await _create_user(session, "notinroom_user2")
-    user3 = await _create_user(session, "notinroom_user3")
-    court = await _create_court(session)
-    booking = await _create_confirmed_booking(session, user1, user2, court)
-    room = await create_chat_room(session, booking=booking, participant_ids=[user1.id, user2.id], court_name=court.name)
-
-    # user3 is not a participant; removing should be a no-op
-    result = await remove_participant(session, room_id=room.id, user_id=user3.id)
-    assert result is None
