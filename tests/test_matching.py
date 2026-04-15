@@ -815,3 +815,180 @@ async def test_block_expires_pending_proposals(client: AsyncClient, session: Asy
     )
     proposal = result.scalar_one()
     assert proposal.status.value == "expired"
+
+
+# --- Pure Helper Unit Tests (no DB) ---
+
+from datetime import time as _time
+from app.services.matching import _time_overlap_minutes, _compute_time_overlap_ratio, _haversine_km
+from app.models.matching import MatchTimeSlot
+
+
+def test_time_overlap_full():
+    """Identical ranges should return full duration."""
+    assert _time_overlap_minutes(_time(9, 0), _time(12, 0), _time(9, 0), _time(12, 0)) == 180
+
+
+def test_time_overlap_partial():
+    assert _time_overlap_minutes(_time(9, 0), _time(12, 0), _time(11, 0), _time(14, 0)) == 60
+
+
+def test_time_overlap_none():
+    assert _time_overlap_minutes(_time(9, 0), _time(12, 0), _time(14, 0), _time(17, 0)) == 0
+
+
+def test_time_overlap_adjacent():
+    """Touching ranges have 0 overlap."""
+    assert _time_overlap_minutes(_time(9, 0), _time(12, 0), _time(12, 0), _time(15, 0)) == 0
+
+
+def test_time_overlap_one_minute():
+    assert _time_overlap_minutes(_time(9, 0), _time(12, 0), _time(11, 59), _time(14, 0)) == 1
+
+
+def test_haversine_same_point():
+    assert _haversine_km(22.28, 114.17, 22.28, 114.17) == 0.0
+
+
+def test_haversine_known_distance():
+    """HK to Taipei is roughly 800km."""
+    dist = _haversine_km(22.28, 114.17, 25.03, 121.56)
+    assert 700 < dist < 900
+
+
+def test_haversine_short_distance():
+    """Two points ~1km apart."""
+    dist = _haversine_km(22.280, 114.170, 22.289, 114.170)
+    assert 0.5 < dist < 1.5
+
+
+def test_compute_time_overlap_ratio_full_overlap():
+    slot_a = MatchTimeSlot(day_of_week=1, start_time=_time(9, 0), end_time=_time(12, 0))
+    slot_b = MatchTimeSlot(day_of_week=1, start_time=_time(9, 0), end_time=_time(12, 0))
+    ratio = _compute_time_overlap_ratio([slot_a], [slot_b])
+    assert ratio == 1.0
+
+
+def test_compute_time_overlap_ratio_no_overlap():
+    slot_a = MatchTimeSlot(day_of_week=1, start_time=_time(9, 0), end_time=_time(12, 0))
+    slot_b = MatchTimeSlot(day_of_week=2, start_time=_time(9, 0), end_time=_time(12, 0))
+    ratio = _compute_time_overlap_ratio([slot_a], [slot_b])
+    assert ratio == 0.0
+
+
+def test_compute_time_overlap_ratio_empty_slots():
+    assert _compute_time_overlap_ratio([], []) == 0.0
+
+
+# --- Proposal Edge Case Tests ---
+
+
+@pytest.mark.asyncio
+async def test_expire_proposals_on_block_direct(client: AsyncClient, session: AsyncSession):
+    """expire_proposals_on_block() should set proposal status to EXPIRED."""
+    from app.models.matching import MatchProposal, ProposalStatus
+    from app.services.match_proposal import expire_proposals_on_block
+
+    user_a = await _create_user_direct(session, "epob_a")
+    user_b = await _create_user_direct(session, "epob_b")
+    court = await _seed_court(session, "EPOB Court")
+
+    proposal = MatchProposal(
+        proposer_id=user_a.id,
+        target_id=user_b.id,
+        court_id=court.id,
+        match_type="singles",
+        play_date=date.today() + timedelta(days=7),
+        start_time=time(10, 0),
+        end_time=time(12, 0),
+    )
+    session.add(proposal)
+    await session.commit()
+    await session.refresh(proposal)
+
+    assert proposal.status == ProposalStatus.PENDING
+
+    await expire_proposals_on_block(session, user_a.id, user_b.id)
+    await session.commit()
+    await session.refresh(proposal)
+
+    assert proposal.status == ProposalStatus.EXPIRED
+
+
+@pytest.mark.asyncio
+async def test_get_proposal_by_id_lazy_expiry(client: AsyncClient, session: AsyncSession):
+    """Fetching a proposal older than 48h via get_proposal_by_id() should expire it."""
+    from datetime import datetime, timezone
+    from app.models.matching import MatchProposal, ProposalStatus
+    from app.services.match_proposal import get_proposal_by_id
+    from sqlalchemy import update
+
+    user_a = await _create_user_direct(session, "lazy_exp_a")
+    user_b = await _create_user_direct(session, "lazy_exp_b")
+    court = await _seed_court(session, "Lazy Expiry Court")
+
+    proposal = MatchProposal(
+        proposer_id=user_a.id,
+        target_id=user_b.id,
+        court_id=court.id,
+        match_type="singles",
+        play_date=date.today() + timedelta(days=7),
+        start_time=time(10, 0),
+        end_time=time(12, 0),
+    )
+    session.add(proposal)
+    await session.commit()
+    await session.refresh(proposal)
+
+    # Backdate created_at to 49 hours ago so it is past the 48h expiry window
+    stale_time = datetime.now(timezone.utc) - timedelta(hours=49)
+    await session.execute(
+        update(MatchProposal)
+        .where(MatchProposal.id == proposal.id)
+        .values(created_at=stale_time)
+    )
+    await session.commit()
+
+    fetched = await get_proposal_by_id(session, proposal.id)
+    assert fetched is not None
+    assert fetched.status == ProposalStatus.EXPIRED
+
+
+@pytest.mark.asyncio
+async def test_accept_proposal_proposer_suspended(client: AsyncClient, session: AsyncSession):
+    """Accepting a proposal whose proposer is suspended should raise ValueError."""
+    from app.models.matching import MatchProposal, ProposalStatus
+    from app.services.match_proposal import respond_to_proposal
+
+    user_a = await _create_user_direct(session, "susp_prop_a")
+    user_b = await _create_user_direct(session, "susp_prop_b")
+    court = await _seed_court(session, "Suspend Court")
+
+    proposal = MatchProposal(
+        proposer_id=user_a.id,
+        target_id=user_b.id,
+        court_id=court.id,
+        match_type="singles",
+        play_date=date.today() + timedelta(days=7),
+        start_time=time(10, 0),
+        end_time=time(12, 0),
+    )
+    session.add(proposal)
+    await session.commit()
+    await session.refresh(proposal)
+
+    # Suspend the proposer
+    user_a.is_suspended = True
+    await session.commit()
+
+    with pytest.raises(ValueError, match="proposer_suspended"):
+        await respond_to_proposal(
+            session,
+            proposal_id=proposal.id,
+            responder=user_b,
+            new_status="accepted",
+        )
+
+    # Proposal should also be marked EXPIRED by the service
+    await session.refresh(proposal)
+    assert proposal.status == ProposalStatus.EXPIRED

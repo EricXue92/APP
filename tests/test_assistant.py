@@ -1,5 +1,5 @@
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from httpx import AsyncClient
@@ -7,8 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.court import Court, CourtType
 from app.models.user import AuthProvider
-from app.services.assistant import parse_booking
-from app.services.llm import RateLimitError, get_provider
+from app.services.assistant import _build_system_prompt, _normalize_response, parse_booking
+from app.services.llm import ClaudeProvider, RateLimitError, get_provider
 from app.services.user import create_user_with_auth
 
 
@@ -272,3 +272,106 @@ async def test_api_parse_booking_llm_error(client: AsyncClient, session: AsyncSe
         )
 
     assert resp.status_code == 502
+
+
+# ── Gap tests ──────────────────────────────────────────────────────────────────
+
+
+def test_normalize_response_strips_extra_fields():
+    """Extra keys in the LLM response are dropped; expected fields are preserved."""
+    raw = {
+        "match_type": "singles",
+        "play_date": "2026-04-19",
+        "start_time": "10:00",
+        "end_time": "12:00",
+        "court_keyword": "维园",
+        "min_ntrp": "3.0",
+        "max_ntrp": "4.5",
+        "gender_requirement": "any",
+        "cost_description": "AA",
+        # extra keys that should be stripped
+        "unexpected_field": "should_be_removed",
+        "another_extra": 42,
+    }
+    result = _normalize_response(raw)
+
+    # Only the nine expected fields should be present
+    expected_keys = {
+        "match_type", "play_date", "start_time", "end_time",
+        "court_keyword", "min_ntrp", "max_ntrp",
+        "gender_requirement", "cost_description",
+    }
+    assert set(result.keys()) == expected_keys
+    assert "unexpected_field" not in result
+    assert "another_extra" not in result
+    assert result["match_type"] == "singles"
+    assert result["court_keyword"] == "维园"
+
+
+def test_build_system_prompt_zh_hans():
+    """zh-Hans prompt contains simplified Chinese characters."""
+    user = MagicMock()
+    user.city = "上海"
+
+    prompt = _build_system_prompt(user, "zh-Hans")
+
+    # Simplified Chinese indicator: 约球助手 (not 約球助手)
+    assert "约球助手" in prompt
+    assert "上海" in prompt
+    # Should NOT contain traditional Chinese indicator
+    assert "約球助手" not in prompt
+
+
+@pytest.mark.asyncio
+async def test_claude_provider_parse_no_tool_use_returns_null_dict():
+    """When the API response contains no tool_use block, parse() returns all-null dict."""
+    provider = ClaudeProvider.__new__(ClaudeProvider)
+
+    # Build a mock response whose content has no tool_use blocks
+    mock_text_block = MagicMock()
+    mock_text_block.type = "text"
+
+    mock_response = MagicMock()
+    mock_response.content = [mock_text_block]
+
+    mock_client = MagicMock()
+    mock_client.messages = MagicMock()
+    mock_client.messages.create = AsyncMock(return_value=mock_response)
+    provider._client = mock_client
+
+    result = await provider.parse("system prompt", "user message")
+
+    assert result["match_type"] is None
+    assert result["play_date"] is None
+    assert result["court_keyword"] is None
+    assert set(result.keys()) == {
+        "match_type", "play_date", "start_time", "end_time",
+        "court_keyword", "min_ntrp", "max_ntrp",
+        "gender_requirement", "cost_description",
+    }
+
+
+@pytest.mark.asyncio
+async def test_parse_booking_empty_court_keyword_no_crash(session: AsyncSession):
+    """Empty string court_keyword is treated as absent — no court search attempted."""
+    user = await _create_test_user(session, "empty_kw_user")
+    fake = FakeProvider(response={
+        "match_type": "singles",
+        "play_date": None,
+        "start_time": None,
+        "end_time": None,
+        "court_keyword": "",   # empty string
+        "min_ntrp": None,
+        "max_ntrp": None,
+        "gender_requirement": None,
+        "cost_description": None,
+    })
+
+    with patch("app.services.assistant.get_provider", return_value=fake):
+        with patch("app.services.assistant._check_rate_limit", new_callable=AsyncMock):
+            result = await parse_booking(session, user, "play singles", "en")
+
+    # Should return without error; court_id and court_name remain None
+    assert result["match_type"] == "singles"
+    assert result["court_id"] is None
+    assert result["court_name"] is None

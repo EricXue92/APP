@@ -67,6 +67,11 @@ class Event(Base):
     participants: Mapped[list["EventParticipant"]] = relationship(back_populates="event", cascade="all, delete-orphan")
     matches: Mapped[list["EventMatch"]] = relationship(back_populates="event", cascade="all, delete-orphan")
 
+    @property
+    def participant_count(self) -> int:
+        active_statuses = {EventParticipantStatus.REGISTERED, EventParticipantStatus.CONFIRMED}
+        return sum(1 for p in self.participants if p.status in active_statuses)
+
 
 class EventParticipant(Base):
     __tablename__ = "event_participants"

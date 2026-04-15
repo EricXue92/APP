@@ -479,10 +479,20 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "zh-Hant": "賽事已開始，無法退出",
         "en": "Cannot withdraw after the event has started",
     },
+    "event.already_cancelled": {
+        "zh-Hans": "赛事已被取消",
+        "zh-Hant": "賽事已被取消",
+        "en": "Event has already been cancelled",
+    },
     "event.walkover_already_decided": {
         "zh-Hans": "该比赛已有结果",
         "zh-Hant": "該比賽已有結果",
         "en": "This match already has a result",
+    },
+    "event.not_participant": {
+        "zh-Hans": "该用户不是赛事参与者",
+        "zh-Hant": "該用戶不是賽事參與者",
+        "en": "User is not a participant in this event",
     },
     "admin.user_already_suspended": {
         "zh-Hant": "該用戶已被停權",

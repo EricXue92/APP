@@ -3,6 +3,7 @@ from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.court import Court, CourtType
+from app.services.court import search_courts_by_keyword, list_courts
 
 
 async def _register_and_get_token(client: AsyncClient, username: str = "courtuser") -> str:
@@ -167,3 +168,130 @@ async def test_list_courts_filter_by_type(client: AsyncClient, session: AsyncSes
     data = resp.json()
     assert len(data) == 1
     assert data[0]["name"] == "Indoor Court"
+
+
+@pytest.mark.asyncio
+async def test_search_courts_by_keyword_name(session: AsyncSession):
+    court = Court(
+        name="Victoria Park Tennis",
+        address="1 Hing Fat St, Causeway Bay",
+        city="Hong Kong",
+        court_type=CourtType.OUTDOOR,
+        is_approved=True,
+    )
+    session.add(court)
+    await session.commit()
+
+    results = await search_courts_by_keyword(session, "Victoria")
+    assert len(results) == 1
+    assert results[0].name == "Victoria Park Tennis"
+
+
+@pytest.mark.asyncio
+async def test_search_courts_by_keyword_address(session: AsyncSession):
+    court = Court(
+        name="Causeway Bay Tennis",
+        address="12 Hennessy Road, Causeway Bay",
+        city="Hong Kong",
+        court_type=CourtType.OUTDOOR,
+        is_approved=True,
+    )
+    session.add(court)
+    await session.commit()
+
+    results = await search_courts_by_keyword(session, "Hennessy")
+    assert len(results) == 1
+    assert results[0].name == "Causeway Bay Tennis"
+
+
+@pytest.mark.asyncio
+async def test_search_courts_by_keyword_case_insensitive(session: AsyncSession):
+    court = Court(
+        name="Tsim Sha Tsui Tennis",
+        address="10 Nathan Road",
+        city="Kowloon",
+        court_type=CourtType.OUTDOOR,
+        is_approved=True,
+    )
+    session.add(court)
+    await session.commit()
+
+    results = await search_courts_by_keyword(session, "tsim sha tsui")
+    assert len(results) == 1
+    assert results[0].name == "Tsim Sha Tsui Tennis"
+
+
+@pytest.mark.asyncio
+async def test_search_courts_by_keyword_no_results(session: AsyncSession):
+    court = Court(
+        name="Happy Valley Tennis",
+        address="1 Sports Road",
+        city="Hong Kong",
+        court_type=CourtType.OUTDOOR,
+        is_approved=True,
+    )
+    session.add(court)
+    await session.commit()
+
+    results = await search_courts_by_keyword(session, "nonexistent_keyword_xyz")
+    assert results == []
+
+
+@pytest.mark.asyncio
+async def test_list_courts_combined_filters(client: AsyncClient, session: AsyncSession):
+    session.add_all([
+        Court(
+            name="HK Indoor Court",
+            address="Addr 1",
+            city="Hong Kong",
+            court_type=CourtType.INDOOR,
+            is_approved=True,
+        ),
+        Court(
+            name="HK Outdoor Court",
+            address="Addr 2",
+            city="Hong Kong",
+            court_type=CourtType.OUTDOOR,
+            is_approved=True,
+        ),
+        Court(
+            name="BJ Indoor Court",
+            address="Addr 3",
+            city="Beijing",
+            court_type=CourtType.INDOOR,
+            is_approved=True,
+        ),
+    ])
+    await session.commit()
+
+    resp = await client.get("/api/v1/courts", params={"city": "Hong Kong", "court_type": "indoor"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) == 1
+    assert data[0]["name"] == "HK Indoor Court"
+
+
+@pytest.mark.asyncio
+async def test_list_courts_approved_only_false(session: AsyncSession):
+    session.add_all([
+        Court(
+            name="Approved Court",
+            address="Addr A",
+            city="Hong Kong",
+            court_type=CourtType.OUTDOOR,
+            is_approved=True,
+        ),
+        Court(
+            name="Unapproved Court",
+            address="Addr B",
+            city="Hong Kong",
+            court_type=CourtType.INDOOR,
+            is_approved=False,
+        ),
+    ])
+    await session.commit()
+
+    results = await list_courts(session, approved_only=False)
+    names = {c.name for c in results}
+    assert "Approved Court" in names
+    assert "Unapproved Court" in names

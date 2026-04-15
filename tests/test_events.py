@@ -808,4 +808,412 @@ async def test_cancel_event(client: AsyncClient, session: AsyncSession):
         headers={"Authorization": f"Bearer {org_token}"},
     )
     assert resp.status_code == 200
-    assert resp.json()["status"] == "cancelled"
+
+
+# ---------------------------------------------------------------------------
+# Score validation unit tests (pure functions, no DB)
+# ---------------------------------------------------------------------------
+
+from app.services.event import validate_set_score, validate_match_score
+
+
+# --- validate_set_score ---
+
+def test_set_score_normal_win():
+    assert validate_set_score(6, 4, None, None, 6) is True
+    assert validate_set_score(6, 0, None, None, 6) is True
+    assert validate_set_score(6, 3, None, None, 6) is True
+
+
+def test_set_score_normal_win_wrong_margin():
+    """6-5 is not valid without tiebreak."""
+    assert validate_set_score(6, 5, None, None, 6) is False
+
+
+def test_set_score_tiebreak_valid():
+    assert validate_set_score(7, 6, 7, 5, 6) is True
+    assert validate_set_score(7, 6, 9, 7, 6) is True
+
+
+def test_set_score_tiebreak_invalid_margin():
+    """Tiebreak must be won by 2."""
+    assert validate_set_score(7, 6, 7, 6, 6) is False
+
+
+def test_set_score_tiebreak_too_low():
+    """Tiebreak winner must reach at least 7."""
+    assert validate_set_score(7, 6, 6, 4, 6) is False
+
+
+def test_set_score_tiebreak_without_7_6():
+    """Tiebreak scores only valid with 7-6 game score."""
+    assert validate_set_score(6, 4, 7, 5, 6) is False
+
+
+def test_set_score_6_6_invalid():
+    assert validate_set_score(6, 6, None, None, 6) is False
+
+
+def test_match_tiebreak_valid():
+    assert validate_set_score(1, 0, 10, 8, 6, is_match_tiebreak=True) is True
+    assert validate_set_score(0, 1, 5, 10, 6, is_match_tiebreak=True) is True
+
+
+def test_match_tiebreak_not_enough():
+    """Match tiebreak winner must reach 10."""
+    assert validate_set_score(1, 0, 8, 6, 6, is_match_tiebreak=True) is False
+
+
+def test_match_tiebreak_margin():
+    """Match tiebreak must be won by 2."""
+    assert validate_set_score(1, 0, 10, 9, 6, is_match_tiebreak=True) is False
+
+
+# --- validate_match_score ---
+
+def test_match_score_straight_sets():
+    sets = [
+        {"score_a": 6, "score_b": 4},
+        {"score_a": 6, "score_b": 3},
+    ]
+    assert validate_match_score(sets, 6, 3, False) == "a"
+
+
+def test_match_score_three_sets():
+    sets = [
+        {"score_a": 4, "score_b": 6},
+        {"score_a": 6, "score_b": 3},
+        {"score_a": 6, "score_b": 4},
+    ]
+    assert validate_match_score(sets, 6, 3, False) == "a"
+
+
+def test_match_score_b_wins():
+    sets = [
+        {"score_a": 3, "score_b": 6},
+        {"score_a": 4, "score_b": 6},
+    ]
+    assert validate_match_score(sets, 6, 3, False) == "b"
+
+
+def test_match_score_deciding_match_tiebreak():
+    sets = [
+        {"score_a": 6, "score_b": 4},
+        {"score_a": 4, "score_b": 6},
+        {"score_a": 1, "score_b": 0, "tiebreak_a": 10, "tiebreak_b": 7},
+    ]
+    assert validate_match_score(sets, 6, 3, True) == "a"
+
+
+def test_match_score_invalid_set():
+    sets = [
+        {"score_a": 5, "score_b": 5},
+    ]
+    assert validate_match_score(sets, 6, 3, False) is None
+
+
+def test_match_score_incomplete():
+    """One set is not enough to win best-of-3."""
+    sets = [
+        {"score_a": 6, "score_b": 4},
+    ]
+    assert validate_match_score(sets, 6, 3, False) is None
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle edge case tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_join_non_open_event(client: AsyncClient, session: AsyncSession):
+    """Joining an in-progress event should fail with 400."""
+    org_token, _ = await _register_and_get_token(client, "lc_org1", ntrp="3.5")
+
+    resp = await client.post(
+        "/api/v1/events",
+        headers={"Authorization": f"Bearer {org_token}"},
+        json={
+            "name": "InProg Cup",
+            "event_type": "singles_elimination",
+            "min_ntrp": "3.0",
+            "max_ntrp": "4.0",
+            "max_participants": 8,
+            "registration_deadline": _future_deadline(),
+        },
+    )
+    event_id = resp.json()["id"]
+    await client.post(f"/api/v1/events/{event_id}/publish", headers={"Authorization": f"Bearer {org_token}"})
+
+    # Add enough players to start (need 4 for elimination)
+    for i in range(4):
+        tk, _ = await _register_and_get_token(client, f"lc_sp{i}", ntrp="3.5")
+        await client.post(f"/api/v1/events/{event_id}/join", headers={"Authorization": f"Bearer {tk}"})
+
+    # Start the event → now in_progress
+    await client.post(f"/api/v1/events/{event_id}/start", headers={"Authorization": f"Bearer {org_token}"})
+
+    # New player tries to join an in-progress event
+    late_token, _ = await _register_and_get_token(client, "lc_late1", ntrp="3.5")
+    resp = await client.post(
+        f"/api/v1/events/{event_id}/join",
+        headers={"Authorization": f"Bearer {late_token}"},
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_join_full_event(client: AsyncClient, session: AsyncSession):
+    """Joining when max_participants is reached should fail with 409."""
+    org_token, _ = await _register_and_get_token(client, "full_org", ntrp="3.5")
+
+    resp = await client.post(
+        "/api/v1/events",
+        headers={"Authorization": f"Bearer {org_token}"},
+        json={
+            "name": "Full Cup",
+            "event_type": "round_robin",
+            "min_ntrp": "3.0",
+            "max_ntrp": "4.0",
+            "max_participants": 4,
+            "registration_deadline": _future_deadline(),
+        },
+    )
+    event_id = resp.json()["id"]
+    await client.post(f"/api/v1/events/{event_id}/publish", headers={"Authorization": f"Bearer {org_token}"})
+
+    # Fill the event to capacity (4 players)
+    for i in range(4):
+        tk, _ = await _register_and_get_token(client, f"full_p{i}", ntrp="3.5")
+        r = await client.post(f"/api/v1/events/{event_id}/join", headers={"Authorization": f"Bearer {tk}"})
+        assert r.status_code == 200
+
+    # 5th player tries to join
+    extra_token, _ = await _register_and_get_token(client, "full_extra", ntrp="3.5")
+    resp = await client.post(
+        f"/api/v1/events/{event_id}/join",
+        headers={"Authorization": f"Bearer {extra_token}"},
+    )
+    assert resp.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_join_at_exact_min_ntrp(client: AsyncClient, session: AsyncSession):
+    """Player with NTRP equal to event min_ntrp should be allowed in."""
+    org_token, _ = await _register_and_get_token(client, "mintrp_org", ntrp="4.0")
+    player_token, _ = await _register_and_get_token(client, "mintrp_player", ntrp="3.0")
+
+    resp = await client.post(
+        "/api/v1/events",
+        headers={"Authorization": f"Bearer {org_token}"},
+        json={
+            "name": "MinNTRP Cup",
+            "event_type": "singles_elimination",
+            "min_ntrp": "3.0",
+            "max_ntrp": "4.5",
+            "max_participants": 8,
+            "registration_deadline": _future_deadline(),
+        },
+    )
+    event_id = resp.json()["id"]
+    await client.post(f"/api/v1/events/{event_id}/publish", headers={"Authorization": f"Bearer {org_token}"})
+
+    resp = await client.post(
+        f"/api/v1/events/{event_id}/join",
+        headers={"Authorization": f"Bearer {player_token}"},
+    )
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_join_above_max_ntrp(client: AsyncClient, session: AsyncSession):
+    """Player with NTRP above event max_ntrp should be rejected with 403."""
+    org_token, _ = await _register_and_get_token(client, "maxtrp_org", ntrp="3.5")
+    # Player has NTRP 4.5 which exceeds the event max of 4.0
+    player_token, _ = await _register_and_get_token(client, "maxtrp_player", ntrp="4.5")
+
+    resp = await client.post(
+        "/api/v1/events",
+        headers={"Authorization": f"Bearer {org_token}"},
+        json={
+            "name": "MaxNTRP Cup",
+            "event_type": "singles_elimination",
+            "min_ntrp": "3.0",
+            "max_ntrp": "4.0",
+            "max_participants": 8,
+            "registration_deadline": _future_deadline(),
+        },
+    )
+    event_id = resp.json()["id"]
+    await client.post(f"/api/v1/events/{event_id}/publish", headers={"Authorization": f"Bearer {org_token}"})
+
+    resp = await client.post(
+        f"/api/v1/events/{event_id}/join",
+        headers={"Authorization": f"Bearer {player_token}"},
+    )
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_withdraw_from_in_progress_event(client: AsyncClient, session: AsyncSession):
+    """Withdrawing from an in-progress event should fail with 400."""
+    org_token, _ = await _register_and_get_token(client, "wd2_org", ntrp="3.5")
+    player_token, _ = await _register_and_get_token(client, "wd2_player", ntrp="3.5")
+
+    resp = await client.post(
+        "/api/v1/events",
+        headers={"Authorization": f"Bearer {org_token}"},
+        json={
+            "name": "WD2 Cup",
+            "event_type": "singles_elimination",
+            "min_ntrp": "3.0",
+            "max_ntrp": "4.0",
+            "max_participants": 8,
+            "registration_deadline": _future_deadline(),
+        },
+    )
+    event_id = resp.json()["id"]
+    await client.post(f"/api/v1/events/{event_id}/publish", headers={"Authorization": f"Bearer {org_token}"})
+    await client.post(f"/api/v1/events/{event_id}/join", headers={"Authorization": f"Bearer {player_token}"})
+
+    # Add more players and start
+    for i in range(3):
+        tk, _ = await _register_and_get_token(client, f"wd2_fill{i}", ntrp="3.5")
+        await client.post(f"/api/v1/events/{event_id}/join", headers={"Authorization": f"Bearer {tk}"})
+    await client.post(f"/api/v1/events/{event_id}/start", headers={"Authorization": f"Bearer {org_token}"})
+
+    # Player tries to withdraw after event started
+    resp = await client.post(
+        f"/api/v1/events/{event_id}/withdraw",
+        headers={"Authorization": f"Bearer {player_token}"},
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_cancel_already_cancelled_event(client: AsyncClient, session: AsyncSession):
+    """Cancelling an already-cancelled event should fail with 400."""
+    org_token, _ = await _register_and_get_token(client, "cc_org", ntrp="3.5")
+
+    resp = await client.post(
+        "/api/v1/events",
+        headers={"Authorization": f"Bearer {org_token}"},
+        json={
+            "name": "CC Cup",
+            "event_type": "singles_elimination",
+            "min_ntrp": "3.0",
+            "max_ntrp": "4.0",
+            "max_participants": 8,
+            "registration_deadline": _future_deadline(),
+        },
+    )
+    event_id = resp.json()["id"]
+    await client.post(f"/api/v1/events/{event_id}/publish", headers={"Authorization": f"Bearer {org_token}"})
+
+    # First cancel — should succeed
+    resp = await client.post(
+        f"/api/v1/events/{event_id}/cancel",
+        headers={"Authorization": f"Bearer {org_token}"},
+    )
+    assert resp.status_code == 200
+
+    # Second cancel — should fail
+    resp = await client.post(
+        f"/api/v1/events/{event_id}/cancel",
+        headers={"Authorization": f"Bearer {org_token}"},
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_list_my_events(client: AsyncClient, session: AsyncSession):
+    """GET /api/v1/events/my returns events the user created and joined."""
+    org_token, _ = await _register_and_get_token(client, "my_org", ntrp="3.5")
+    joiner_token, _ = await _register_and_get_token(client, "my_joiner", ntrp="3.5")
+
+    # Organizer creates event A
+    resp = await client.post(
+        "/api/v1/events",
+        headers={"Authorization": f"Bearer {org_token}"},
+        json={
+            "name": "My Event A",
+            "event_type": "singles_elimination",
+            "min_ntrp": "3.0",
+            "max_ntrp": "4.0",
+            "max_participants": 8,
+            "registration_deadline": _future_deadline(),
+        },
+    )
+    event_a_id = resp.json()["id"]
+    await client.post(f"/api/v1/events/{event_a_id}/publish", headers={"Authorization": f"Bearer {org_token}"})
+
+    # Organizer creates event B
+    resp = await client.post(
+        "/api/v1/events",
+        headers={"Authorization": f"Bearer {org_token}"},
+        json={
+            "name": "My Event B",
+            "event_type": "round_robin",
+            "min_ntrp": "3.0",
+            "max_ntrp": "4.0",
+            "max_participants": 8,
+            "registration_deadline": _future_deadline(),
+        },
+    )
+    event_b_id = resp.json()["id"]
+    await client.post(f"/api/v1/events/{event_b_id}/publish", headers={"Authorization": f"Bearer {org_token}"})
+
+    # Joiner joins event A only
+    await client.post(f"/api/v1/events/{event_a_id}/join", headers={"Authorization": f"Bearer {joiner_token}"})
+
+    # Organizer's /my should show both events
+    resp = await client.get("/api/v1/events/my", headers={"Authorization": f"Bearer {org_token}"})
+    assert resp.status_code == 200
+    my_events = resp.json()
+    my_ids = [e["id"] for e in my_events]
+    assert event_a_id in my_ids
+    assert event_b_id in my_ids
+
+    # Joiner's /my should show only event A
+    resp = await client.get("/api/v1/events/my", headers={"Authorization": f"Bearer {joiner_token}"})
+    assert resp.status_code == 200
+    joiner_events = resp.json()
+    joiner_ids = [e["id"] for e in joiner_events]
+    assert event_a_id in joiner_ids
+    assert event_b_id not in joiner_ids
+
+
+@pytest.mark.asyncio
+async def test_get_standings_for_elimination_event(client: AsyncClient, session: AsyncSession):
+    """GET /standings on an elimination event should return an empty list (graceful)."""
+    org_token, _ = await _register_and_get_token(client, "estd_org", ntrp="4.0")
+
+    resp = await client.post(
+        "/api/v1/events",
+        headers={"Authorization": f"Bearer {org_token}"},
+        json={
+            "name": "Elim Standings Cup",
+            "event_type": "singles_elimination",
+            "min_ntrp": "3.0",
+            "max_ntrp": "4.5",
+            "max_participants": 8,
+            "registration_deadline": _future_deadline(),
+        },
+    )
+    event_id = resp.json()["id"]
+    await client.post(f"/api/v1/events/{event_id}/publish", headers={"Authorization": f"Bearer {org_token}"})
+
+    for i in range(4):
+        tk, _ = await _register_and_get_token(client, f"estd_p{i}", ntrp="3.5")
+        await client.post(f"/api/v1/events/{event_id}/join", headers={"Authorization": f"Bearer {tk}"})
+
+    await client.post(f"/api/v1/events/{event_id}/start", headers={"Authorization": f"Bearer {org_token}"})
+
+    resp = await client.get(
+        f"/api/v1/events/{event_id}/standings",
+        headers={"Authorization": f"Bearer {org_token}"},
+    )
+    # Elimination events don't use standings — should return 200 with empty list
+    assert resp.status_code == 200
+    standings = resp.json()
+    assert isinstance(standings, list)

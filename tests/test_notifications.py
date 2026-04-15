@@ -593,3 +593,99 @@ async def test_report_suspended_notifies_target(client: AsyncClient, session: As
     notif = result.scalar_one_or_none()
     assert notif is not None
     assert notif.target_type == "report"
+
+
+# --- Gap tests ---
+
+
+@pytest.mark.asyncio
+async def test_create_notification_direct(client: AsyncClient, session: AsyncSession):
+    """create_notification() unit test — call directly, verify DB record."""
+    from app.models.notification import NotificationType
+    from app.services.notification import create_notification
+
+    token, uid = await _register_and_get_token(client, "gap_create1")
+    recipient_id = uuid.UUID(uid)
+
+    notif = await create_notification(
+        session,
+        recipient_id=recipient_id,
+        type=NotificationType.NEW_FOLLOWER,
+    )
+    await session.commit()
+
+    assert notif.id is not None
+    assert notif.recipient_id == recipient_id
+    assert notif.type == NotificationType.NEW_FOLLOWER
+    assert notif.actor_id is None
+    assert notif.target_type is None
+    assert notif.target_id is None
+    assert notif.is_read is False
+
+
+@pytest.mark.asyncio
+async def test_unread_count_mixed_state(client: AsyncClient, session: AsyncSession):
+    """Create 3 notifications, mark 1 as read, verify unread_count == 2."""
+    token1, uid1 = await _register_and_get_token(client, "gap_mixed_recv")
+
+    # Create 3 followers → 3 new_follower notifications for uid1
+    followers = []
+    for i in range(3):
+        tok, _ = await _register_and_get_token(client, f"gap_mixed_f{i}")
+        followers.append(tok)
+        await client.post("/api/v1/follows", json={"followed_id": uid1}, headers=_auth(tok))
+
+    # Confirm 3 unread
+    resp = await client.get("/api/v1/notifications/unread-count", headers=_auth(token1))
+    assert resp.json()["unread_count"] == 3
+
+    # Mark one notification as read
+    resp = await client.get("/api/v1/notifications", headers=_auth(token1))
+    notifs = resp.json()
+    notif_id = notifs[0]["id"]
+    await client.patch(f"/api/v1/notifications/{notif_id}/read", headers=_auth(token1))
+
+    # Now unread_count should be 2
+    resp = await client.get("/api/v1/notifications/unread-count", headers=_auth(token1))
+    assert resp.json()["unread_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_mark_all_as_read_no_notifications(client: AsyncClient, session: AsyncSession):
+    """mark_all_as_read() on a user with no notifications should not error."""
+    from app.services.notification import mark_all_as_read
+
+    token, uid = await _register_and_get_token(client, "gap_empty_markall")
+    user_id = uuid.UUID(uid)
+
+    # Should complete without exception
+    await mark_all_as_read(session, user_id)
+    await session.commit()
+
+    # Confirm nothing changed (still 0 unread)
+    resp = await client.get("/api/v1/notifications/unread-count", headers=_auth(token))
+    assert resp.json()["unread_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_list_notifications_newest_first(client: AsyncClient, session: AsyncSession):
+    """Create 3 notifications sequentially and verify list returns newest first."""
+    token1, uid1 = await _register_and_get_token(client, "gap_order_recv")
+
+    # Create followers one by one to generate ordered notifications
+    created_follower_ids = []
+    for i in range(3):
+        tok, fid = await _register_and_get_token(client, f"gap_order_f{i}")
+        await client.post("/api/v1/follows", json={"followed_id": uid1}, headers=_auth(tok))
+        created_follower_ids.append(fid)
+
+    resp = await client.get("/api/v1/notifications", headers=_auth(token1))
+    notifs = resp.json()
+    assert len(notifs) == 3
+
+    # Verify descending order by created_at
+    created_ats = [n["created_at"] for n in notifs]
+    assert created_ats == sorted(created_ats, reverse=True), "Notifications should be newest first"
+
+    # The most recent notification should be from the last follower
+    assert notifs[0]["actor_id"] == created_follower_ids[-1]

@@ -292,3 +292,101 @@ async def test_review_triggers_evaluation(session: AsyncSession):
 
     await session.refresh(reviewee)
     assert reviewee.is_ideal_player is True
+
+
+@pytest.mark.asyncio
+async def test_nonexistent_user_returns_false(session: AsyncSession):
+    """evaluate_ideal_status with a random UUID returns False without error."""
+    result = await evaluate_ideal_status(session, uuid.uuid4())
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_credit_exactly_at_threshold(session: AsyncSession):
+    """Credit=90 (exactly at threshold) should qualify."""
+    user = await _create_user(session, "credit_90", credit_score=90)
+    await _seed_completed_bookings(session, user.id, 10)
+    await _seed_reviews(session, user.id, [(4, 4, 4)] * 3)
+
+    result = await evaluate_ideal_status(session, user.id)
+    assert result is True
+
+
+@pytest.mark.asyncio
+async def test_credit_one_below_threshold(session: AsyncSession):
+    """Credit=89 (one below threshold) should not qualify."""
+    user = await _create_user(session, "credit_89", credit_score=89)
+    await _seed_completed_bookings(session, user.id, 10)
+    await _seed_reviews(session, user.id, [(4, 4, 4)] * 3)
+
+    result = await evaluate_ideal_status(session, user.id)
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_avg_rating_exactly_4(session: AsyncSession):
+    """Average rating of exactly 4.0 should qualify (threshold uses <, not <=)."""
+    user = await _create_user(session, "rating_4_0", credit_score=95)
+    await _seed_completed_bookings(session, user.id, 10)
+    # (4+4+4)/3 = 4.0 exactly
+    await _seed_reviews(session, user.id, [(4, 4, 4)] * 3)
+
+    result = await evaluate_ideal_status(session, user.id)
+    assert result is True
+
+
+@pytest.mark.asyncio
+async def test_avg_rating_below_4(session: AsyncSession):
+    """Average rating of 3.99 should not qualify."""
+    user = await _create_user(session, "rating_3_99", credit_score=95)
+    await _seed_completed_bookings(session, user.id, 10)
+    # (4+4+4)/3 * 2 reviews + (3+4+4)/3 * 1 review
+    # avg = (4.0 + 4.0 + 11/3) / 3 = (4 + 4 + 3.667) / 3 = 11.667/3 ≈ 3.889 < 4.0
+    await _seed_reviews(session, user.id, [(4, 4, 4), (4, 4, 4), (3, 4, 4)])
+
+    result = await evaluate_ideal_status(session, user.id)
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_hidden_reviews_excluded_from_average(session: AsyncSession):
+    """Hidden reviews are excluded; only visible reviews count toward average."""
+    user = await _create_user(session, "hidden_review", credit_score=95)
+    await _seed_completed_bookings(session, user.id, 10)
+
+    # Add a good visible review (5,5,5) → avg per review = 5.0
+    await _seed_reviews(session, user.id, [(5, 5, 5)])
+
+    # Add a bad hidden review directly — if counted, would drag average below 4.0
+    reviewer2 = await _create_user(session, "bad_reviewer_h", credit_score=80)
+    court = await _create_court(session)
+    bad_booking = Booking(
+        creator_id=reviewer2.id,
+        court_id=court.id,
+        match_type=MatchType.SINGLES,
+        play_date=date(2026, 5, 1),
+        start_time=time(10, 0),
+        end_time=time(12, 0),
+        min_ntrp="3.0",
+        max_ntrp="4.0",
+        gender_requirement=GenderRequirement.ANY,
+        max_participants=2,
+        status=BookingStatus.COMPLETED,
+    )
+    session.add(bad_booking)
+    await session.flush()
+    hidden_review = Review(
+        booking_id=bad_booking.id,
+        reviewer_id=reviewer2.id,
+        reviewee_id=user.id,
+        skill_rating=1,
+        punctuality_rating=1,
+        sportsmanship_rating=1,
+        is_hidden=True,
+    )
+    session.add(hidden_review)
+    await session.flush()
+
+    # With only the visible (5,5,5) review counting, average = 5.0 → should be ideal
+    result = await evaluate_ideal_status(session, user.id)
+    assert result is True

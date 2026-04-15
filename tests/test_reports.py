@@ -217,3 +217,113 @@ async def test_content_hidden_invalid_for_user_report(client: AsyncClient, sessi
     report_id = resp.json()["id"]
     resp = await client.patch(f"/api/v1/admin/reports/{report_id}/resolve", json={"resolution": "content_hidden"}, headers=_auth(token1))
     assert resp.status_code == 400
+
+
+# --- Gap Tests ---
+
+@pytest.mark.asyncio
+async def test_warned_resolution_creates_notification(client: AsyncClient, session: AsyncSession):
+    """Resolving a report with 'warned' sends an ACCOUNT_WARNED notification to the reported user."""
+    from sqlalchemy import select as sa_select
+    from app.models.notification import Notification, NotificationType
+
+    reporter_token, reporter_id = await _register_and_get_token(client, "warnreporter")
+    reported_token, reported_id = await _register_and_get_token(client, "warnreported")
+    admin_token, admin_id = await _register_and_get_token(client, "warnadmin")
+    await _make_admin(session, admin_id)
+
+    resp = await client.post(
+        "/api/v1/reports",
+        json={"reported_user_id": reported_id, "target_type": "user", "reason": "harassment"},
+        headers=_auth(reporter_token),
+    )
+    assert resp.status_code == 201
+    report_id = resp.json()["id"]
+
+    resp = await client.patch(
+        f"/api/v1/admin/reports/{report_id}/resolve",
+        json={"resolution": "warned"},
+        headers=_auth(admin_token),
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "resolved"
+    assert resp.json()["resolution"] == "warned"
+
+    # Verify ACCOUNT_WARNED notification was created for the reported user
+    result = await session.execute(
+        sa_select(Notification).where(
+            Notification.recipient_id == uuid.UUID(reported_id),
+            Notification.type == NotificationType.ACCOUNT_WARNED,
+        )
+    )
+    notification = result.scalar_one_or_none()
+    assert notification is not None
+
+
+@pytest.mark.asyncio
+async def test_list_reports_with_status_filter(client: AsyncClient, session: AsyncSession):
+    """Admin can filter reports by status=pending and status=resolved."""
+    token1, uid1 = await _register_and_get_token(client, "filterreporter1")
+    token2, uid2 = await _register_and_get_token(client, "filterreported1")
+    token3, uid3 = await _register_and_get_token(client, "filterreported2")
+    admin_token, admin_id = await _register_and_get_token(client, "filteradmin")
+    await _make_admin(session, admin_id)
+
+    # Create two reports
+    resp1 = await client.post(
+        "/api/v1/reports",
+        json={"reported_user_id": uid2, "target_type": "user", "reason": "harassment"},
+        headers=_auth(token1),
+    )
+    report1_id = resp1.json()["id"]
+
+    resp2 = await client.post(
+        "/api/v1/reports",
+        json={"reported_user_id": uid3, "target_type": "user", "reason": "other"},
+        headers=_auth(token1),
+    )
+    report2_id = resp2.json()["id"]
+
+    # Resolve one of them
+    await client.patch(
+        f"/api/v1/admin/reports/{report1_id}/resolve",
+        json={"resolution": "dismissed"},
+        headers=_auth(admin_token),
+    )
+
+    # Filter by pending — should include report2, not report1
+    resp = await client.get("/api/v1/admin/reports?status=pending", headers=_auth(admin_token))
+    assert resp.status_code == 200
+    pending_ids = [r["id"] for r in resp.json()]
+    assert report2_id in pending_ids
+    assert report1_id not in pending_ids
+
+    # Filter by resolved — should include report1, not report2
+    resp = await client.get("/api/v1/admin/reports?status=resolved", headers=_auth(admin_token))
+    assert resp.status_code == 200
+    resolved_ids = [r["id"] for r in resp.json()]
+    assert report1_id in resolved_ids
+    assert report2_id not in resolved_ids
+
+
+@pytest.mark.asyncio
+async def test_empty_reports_list(client: AsyncClient, session: AsyncSession):
+    """A user who has never filed a report sees an empty list."""
+    token, uid = await _register_and_get_token(client, "noreportuser")
+    resp = await client.get("/api/v1/reports/mine", headers=_auth(token))
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+@pytest.mark.asyncio
+async def test_report_nonexistent_review_target(client: AsyncClient, session: AsyncSession):
+    """Reporting a review with a random UUID that doesn't exist should return 400."""
+    token1, uid1 = await _register_and_get_token(client, "badrevreporter")
+    token2, uid2 = await _register_and_get_token(client, "badrevreported")
+    fake_review_id = str(uuid.uuid4())
+    resp = await client.post(
+        "/api/v1/reports",
+        json={"reported_user_id": uid2, "target_type": "review", "target_id": fake_review_id, "reason": "inappropriate"},
+        headers=_auth(token1),
+    )
+    assert resp.status_code == 400

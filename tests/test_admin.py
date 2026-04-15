@@ -1,3 +1,5 @@
+import uuid
+
 import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -30,7 +32,6 @@ def _auth_header(user: User) -> dict[str, str]:
 
 # --- Auth gate tests ---
 
-
 @pytest.mark.asyncio
 async def test_regular_user_cannot_access_admin(client: AsyncClient, session: AsyncSession):
     user = await _create_user(session)
@@ -47,7 +48,6 @@ async def test_admin_cannot_access_superadmin_endpoints(client: AsyncClient, ses
 
 
 # --- User management tests ---
-
 
 @pytest.mark.asyncio
 async def test_admin_list_users(client: AsyncClient, session: AsyncSession):
@@ -235,7 +235,6 @@ async def test_admin_cannot_delete_court(client: AsyncClient, session: AsyncSess
 
 
 # --- Dashboard and audit tests ---
-
 
 @pytest.mark.asyncio
 async def test_dashboard_stats(client: AsyncClient, session: AsyncSession):

@@ -3,13 +3,14 @@ from datetime import date, datetime, timedelta, timezone
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.booking import Booking, BookingParticipant, BookingStatus, ParticipantStatus
 from app.models.court import Court, CourtType
 from app.models.review import Review
 from app.models.user import User
+from app.services.review import get_booking_reviews_for_user, get_review_averages
 
 
 async def _register_and_get_token(client: AsyncClient, username: str, gender: str = "male", ntrp: str = "3.5") -> tuple[str, str]:
@@ -622,3 +623,275 @@ async def test_user_reviews_averages_correct(client: AsyncClient, session: Async
     assert data["average_punctuality"] == 3.0
     assert data["average_sportsmanship"] == 3.0
     assert len(data["reviews"]) == 2
+
+
+async def _create_completed_doubles_booking(
+    client: AsyncClient,
+    session: AsyncSession,
+    token1: str,
+    token2: str,
+    token3: str,
+    token4: str,
+    court_id: str,
+) -> str:
+    """Create a 4-person doubles booking, accept all, confirm, backdate, complete. Returns booking_id."""
+    # Creator (token1) creates a doubles booking
+    resp = await client.post(
+        "/api/v1/bookings",
+        headers={"Authorization": f"Bearer {token1}"},
+        json={
+            "court_id": court_id,
+            "match_type": "doubles",
+            "play_date": _future_date(),
+            "start_time": "14:00:00",
+            "end_time": "16:00:00",
+            "min_ntrp": "3.0",
+            "max_ntrp": "4.0",
+            "gender_requirement": "any",
+            "description": "Doubles review test",
+        },
+    )
+    assert resp.status_code == 201, f"Create doubles booking failed: {resp.json()}"
+    booking_id = resp.json()["id"]
+
+    # All three others join
+    for token in (token2, token3, token4):
+        resp = await client.post(
+            f"/api/v1/bookings/{booking_id}/join",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200, f"Join failed: {resp.json()}"
+
+    # Creator accepts all pending participants
+    detail = await client.get(f"/api/v1/bookings/{booking_id}")
+    participants = detail.json()["participants"]
+    pending_ids = [p["user_id"] for p in participants if p["status"] == "pending"]
+    for joiner_id in pending_ids:
+        resp = await client.patch(
+            f"/api/v1/bookings/{booking_id}/participants/{joiner_id}",
+            headers={"Authorization": f"Bearer {token1}"},
+            json={"status": "accepted"},
+        )
+        assert resp.status_code == 200, f"Accept failed: {resp.json()}"
+
+    # Confirm
+    resp = await client.post(
+        f"/api/v1/bookings/{booking_id}/confirm",
+        headers={"Authorization": f"Bearer {token1}"},
+    )
+    assert resp.status_code == 200, f"Confirm failed: {resp.json()}"
+
+    # Backdate play_date to past so complete works
+    await session.execute(
+        update(Booking)
+        .where(Booking.id == uuid.UUID(booking_id))
+        .values(play_date=date.today() - timedelta(days=1))
+    )
+    await session.commit()
+
+    # Complete
+    resp = await client.post(
+        f"/api/v1/bookings/{booking_id}/complete",
+        headers={"Authorization": f"Bearer {token1}"},
+    )
+    assert resp.status_code == 200, f"Complete failed: {resp.json()}"
+    assert resp.json()["status"] == "completed"
+
+    return booking_id
+
+
+# --- Gap Tests ---
+
+
+@pytest.mark.asyncio
+async def test_blocked_user_cannot_submit_review(client: AsyncClient, session: AsyncSession):
+    """Blocked user should be prevented from reviewing the blocked user."""
+    token1, user_id1 = await _register_and_get_token(client, "rev_blk1")
+    token2, user_id2 = await _register_and_get_token(client, "rev_blk2")
+    court = await _seed_court(session)
+
+    booking_id = await _create_completed_booking(client, session, token1, token2, str(court.id))
+
+    # user1 blocks user2
+    resp = await client.post(
+        "/api/v1/blocks",
+        headers={"Authorization": f"Bearer {token1}"},
+        json={"blocked_id": user_id2},
+    )
+    assert resp.status_code == 201, f"Block failed: {resp.json()}"
+
+    # user1 now tries to review user2 — should fail because block exists
+    resp = await client.post(
+        "/api/v1/reviews",
+        headers={"Authorization": f"Bearer {token1}"},
+        json={
+            "booking_id": booking_id,
+            "reviewee_id": user_id2,
+            "skill_rating": 4,
+            "punctuality_rating": 5,
+            "sportsmanship_rating": 3,
+        },
+    )
+    assert resp.status_code in (400, 403)
+
+
+@pytest.mark.asyncio
+async def test_hidden_reviews_excluded_from_averages(client: AsyncClient, session: AsyncSession):
+    """Reviews with is_hidden=True should not count toward averages."""
+    token1, user_id1 = await _register_and_get_token(client, "rev_hid1")
+    token2, user_id2 = await _register_and_get_token(client, "rev_hid2")
+    token3, user_id3 = await _register_and_get_token(client, "rev_hid3")
+    court = await _seed_court(session)
+
+    # Booking 1: user1 <-> user2, both review each other (reveals)
+    booking_id1 = await _create_completed_booking(client, session, token1, token2, str(court.id))
+    await client.post(
+        "/api/v1/reviews",
+        headers={"Authorization": f"Bearer {token1}"},
+        json={
+            "booking_id": booking_id1,
+            "reviewee_id": user_id2,
+            "skill_rating": 5,
+            "punctuality_rating": 5,
+            "sportsmanship_rating": 5,
+        },
+    )
+    await client.post(
+        "/api/v1/reviews",
+        headers={"Authorization": f"Bearer {token2}"},
+        json={
+            "booking_id": booking_id1,
+            "reviewee_id": user_id1,
+            "skill_rating": 5,
+            "punctuality_rating": 5,
+            "sportsmanship_rating": 5,
+        },
+    )
+
+    # Booking 2: user1 <-> user3, both review each other (reveals)
+    booking_id2 = await _create_completed_booking(client, session, token1, token3, str(court.id))
+    await client.post(
+        "/api/v1/reviews",
+        headers={"Authorization": f"Bearer {token1}"},
+        json={
+            "booking_id": booking_id2,
+            "reviewee_id": user_id3,
+            "skill_rating": 1,
+            "punctuality_rating": 1,
+            "sportsmanship_rating": 1,
+        },
+    )
+    await client.post(
+        "/api/v1/reviews",
+        headers={"Authorization": f"Bearer {token3}"},
+        json={
+            "booking_id": booking_id2,
+            "reviewee_id": user_id1,
+            "skill_rating": 1,
+            "punctuality_rating": 1,
+            "sportsmanship_rating": 1,
+        },
+    )
+
+    # Verify user1 has 2 revealed reviews with average 3.0 before hiding
+    averages = await get_review_averages(session, uuid.UUID(user_id1))
+    assert averages["total_reviews"] == 2
+    assert averages["average_skill"] == 3.0
+
+    # Hide the review from booking2 (the rating=1 one) directly in the DB
+    await session.execute(
+        update(Review)
+        .where(
+            Review.booking_id == uuid.UUID(booking_id2),
+            Review.reviewee_id == uuid.UUID(user_id1),
+        )
+        .values(is_hidden=True)
+    )
+    await session.commit()
+
+    # Now averages should only include the rating=5 review from booking1
+    averages = await get_review_averages(session, uuid.UUID(user_id1))
+    assert averages["total_reviews"] == 1
+    assert averages["average_skill"] == 5.0
+    assert averages["average_punctuality"] == 5.0
+    assert averages["average_sportsmanship"] == 5.0
+
+
+@pytest.mark.asyncio
+async def test_pending_reviews_four_person_doubles(client: AsyncClient, session: AsyncSession):
+    """Each participant in a 4-person completed doubles booking sees 3 pending reviewees."""
+    token1, user_id1 = await _register_and_get_token(client, "rev_dbl1")
+    token2, user_id2 = await _register_and_get_token(client, "rev_dbl2")
+    token3, user_id3 = await _register_and_get_token(client, "rev_dbl3")
+    token4, user_id4 = await _register_and_get_token(client, "rev_dbl4")
+    court = await _seed_court(session)
+
+    booking_id = await _create_completed_doubles_booking(
+        client, session, token1, token2, token3, token4, str(court.id)
+    )
+
+    all_user_ids = {user_id1, user_id2, user_id3, user_id4}
+
+    # Each participant should have exactly 3 pending reviewees (all other 3 participants)
+    for token, my_user_id in [
+        (token1, user_id1),
+        (token2, user_id2),
+        (token3, user_id3),
+        (token4, user_id4),
+    ]:
+        resp = await client.get(
+            "/api/v1/reviews/pending",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200, f"Pending for {my_user_id} failed: {resp.json()}"
+        data = resp.json()
+        assert len(data) == 1, f"User {my_user_id} expected 1 booking pending, got {len(data)}"
+        assert data[0]["booking_id"] == booking_id
+        reviewee_ids = {r["user_id"] for r in data[0]["reviewees"]}
+        expected_ids = all_user_ids - {my_user_id}
+        assert reviewee_ids == expected_ids, (
+            f"User {my_user_id}: expected reviewees {expected_ids}, got {reviewee_ids}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_non_participant_gets_empty_booking_reviews(client: AsyncClient, session: AsyncSession):
+    """get_booking_reviews_for_user() returns empty list for user not in booking."""
+    token1, user_id1 = await _register_and_get_token(client, "rev_out1")
+    token2, user_id2 = await _register_and_get_token(client, "rev_out2")
+    token3, user_id3 = await _register_and_get_token(client, "rev_out3")
+    court = await _seed_court(session)
+
+    booking_id = await _create_completed_booking(client, session, token1, token2, str(court.id))
+
+    # user1 reviews user2 and user2 reviews user1 so reviews exist in DB
+    await client.post(
+        "/api/v1/reviews",
+        headers={"Authorization": f"Bearer {token1}"},
+        json={
+            "booking_id": booking_id,
+            "reviewee_id": user_id2,
+            "skill_rating": 4,
+            "punctuality_rating": 4,
+            "sportsmanship_rating": 4,
+        },
+    )
+    await client.post(
+        "/api/v1/reviews",
+        headers={"Authorization": f"Bearer {token2}"},
+        json={
+            "booking_id": booking_id,
+            "reviewee_id": user_id1,
+            "skill_rating": 4,
+            "punctuality_rating": 4,
+            "sportsmanship_rating": 4,
+        },
+    )
+
+    # user3 (outsider) calls the service directly — should get nothing
+    result = await get_booking_reviews_for_user(
+        session,
+        uuid.UUID(booking_id),
+        uuid.UUID(user_id3),
+    )
+    assert result == [], f"Expected empty list for non-participant, got: {result}"

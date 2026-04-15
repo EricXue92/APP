@@ -82,3 +82,83 @@ async def test_credit_history(session):
     logs = await get_credit_history(session, user.id)
     assert len(logs) == 2
     assert all(log.delta == 5 for log in logs)
+
+
+@pytest.mark.asyncio
+async def test_cancel_12_24h_deducts_2(session):
+    user = await _create_test_user(session, "cancel12_24h")
+    user.cancel_count = 1
+    await session.commit()
+    user = await apply_credit_change(session, user, CreditReason.CANCEL_12_24H)
+    assert user.credit_score == 78
+    assert user.cancel_count == 2
+
+
+@pytest.mark.asyncio
+async def test_cancel_2h_deducts_5(session):
+    user = await _create_test_user(session, "cancel2h")
+    user.cancel_count = 1
+    await session.commit()
+    user = await apply_credit_change(session, user, CreditReason.CANCEL_2H)
+    assert user.credit_score == 75
+    assert user.cancel_count == 2
+
+
+@pytest.mark.asyncio
+async def test_credit_floor_at_zero(session):
+    """Credit score should never go below 0."""
+    user = await _create_test_user(session, "floor0")
+    user.credit_score = 2
+    user.cancel_count = 1
+    await session.commit()
+    user = await apply_credit_change(session, user, CreditReason.NO_SHOW)
+    assert user.credit_score == 0
+
+
+@pytest.mark.asyncio
+async def test_admin_adjust_zero_delta(session):
+    """ADMIN_ADJUST is not in _DELTAS so delta defaults to 0."""
+    user = await _create_test_user(session, "adminadj")
+    user = await apply_credit_change(session, user, CreditReason.ADMIN_ADJUST)
+    assert user.credit_score == 80
+
+
+@pytest.mark.asyncio
+async def test_three_consecutive_cancels(session):
+    """Third cancel should still apply full penalty."""
+    user = await _create_test_user(session, "threecancel")
+    # 1st cancel: warning
+    user = await apply_credit_change(session, user, CreditReason.CANCEL_24H)
+    assert user.credit_score == 80 and user.cancel_count == 1
+    # 2nd cancel: -1
+    user = await apply_credit_change(session, user, CreditReason.CANCEL_24H)
+    assert user.credit_score == 79 and user.cancel_count == 2
+    # 3rd cancel: -1
+    user = await apply_credit_change(session, user, CreditReason.CANCEL_24H)
+    assert user.credit_score == 78 and user.cancel_count == 3
+
+
+@pytest.mark.asyncio
+async def test_credit_log_description(session):
+    """Description should be stored in CreditLog."""
+    user = await _create_test_user(session, "logdesc")
+    await apply_credit_change(session, user, CreditReason.ATTENDED, description="Booking #123")
+    logs = await get_credit_history(session, user.id)
+    assert len(logs) == 1
+    assert logs[0].description == "Booking #123"
+
+
+@pytest.mark.asyncio
+async def test_credit_history_empty(session):
+    user = await _create_test_user(session, "nologs")
+    logs = await get_credit_history(session, user.id)
+    assert logs == []
+
+
+@pytest.mark.asyncio
+async def test_credit_history_custom_limit(session):
+    user = await _create_test_user(session, "limitlog")
+    for _ in range(5):
+        await apply_credit_change(session, user, CreditReason.ATTENDED)
+    logs = await get_credit_history(session, user.id, limit=3)
+    assert len(logs) == 3
