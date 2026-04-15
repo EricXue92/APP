@@ -84,3 +84,71 @@ async def test_remove_device_not_found(session: AsyncSession):
     user_id = await _create_user(session, "dev_rm404")
     with pytest.raises(LookupError):
         await remove_device(session, user_id=user_id, token="nonexistent-token")
+
+
+from httpx import AsyncClient
+
+
+async def _register_and_get_token(client: AsyncClient, username: str) -> tuple[str, str]:
+    resp = await client.post(
+        "/api/v1/auth/register/username",
+        params={
+            "nickname": f"Player_{username}",
+            "gender": "male",
+            "city": "Taipei",
+            "ntrp_level": "3.5",
+            "language": "en",
+        },
+        json={"username": username, "password": "pass1234", "email": f"{username}@example.com"},
+    )
+    data = resp.json()
+    return data["access_token"], data["user_id"]
+
+
+def _auth(token: str) -> dict:
+    return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.mark.asyncio
+async def test_register_device_endpoint(client: AsyncClient, session: AsyncSession):
+    token, uid = await _register_and_get_token(client, "devapi_reg")
+    resp = await client.post(
+        "/api/v1/devices",
+        json={"platform": "ios", "token": "fcm-endpoint-token"},
+        headers=_auth(token),
+    )
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["platform"] == "ios"
+    assert data["token"] == "fcm-endpoint-token"
+    assert "id" in data
+
+
+@pytest.mark.asyncio
+async def test_register_device_duplicate_endpoint(client: AsyncClient, session: AsyncSession):
+    token, uid = await _register_and_get_token(client, "devapi_dup")
+    body = {"platform": "ios", "token": "fcm-dup-endpoint"}
+    resp1 = await client.post("/api/v1/devices", json=body, headers=_auth(token))
+    resp2 = await client.post("/api/v1/devices", json=body, headers=_auth(token))
+    assert resp1.status_code == 201
+    assert resp2.status_code == 201
+    assert resp1.json()["id"] == resp2.json()["id"]
+
+
+@pytest.mark.asyncio
+async def test_delete_device_endpoint(client: AsyncClient, session: AsyncSession):
+    token, uid = await _register_and_get_token(client, "devapi_del")
+    await client.post(
+        "/api/v1/devices",
+        json={"platform": "android", "token": "fcm-delete-me"},
+        headers=_auth(token),
+    )
+    resp = await client.delete("/api/v1/devices/fcm-delete-me", headers=_auth(token))
+    assert resp.status_code == 204
+
+
+@pytest.mark.asyncio
+async def test_delete_device_not_found_endpoint(client: AsyncClient, session: AsyncSession):
+    token, uid = await _register_and_get_token(client, "devapi_del404")
+    resp = await client.delete("/api/v1/devices/nonexistent", headers=_auth(token))
+    assert resp.status_code == 404
