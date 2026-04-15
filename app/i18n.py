@@ -304,6 +304,56 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "zh-Hant": "目標用戶不存在",
         "en": "Target user not found",
     },
+    "weather.typhoon": {
+        "zh-Hans": "台风警告生效，建议取消",
+        "zh-Hant": "颱風警告生效，建議取消",
+        "en": "Typhoon warning active, consider cancelling",
+    },
+    "weather.rainstorm": {
+        "zh-Hans": "暴雨警告生效，建议取消",
+        "zh-Hant": "暴雨警告生效，建議取消",
+        "en": "Heavy rainstorm warning active, consider cancelling",
+    },
+    "weather.rain_high": {
+        "zh-Hans": "降雨概率极高，可免责取消",
+        "zh-Hant": "降雨機率極高，可免責取消",
+        "en": "Very high chance of rain, free cancellation available",
+    },
+    "weather.heat_extreme": {
+        "zh-Hans": "极端高温，建议取消",
+        "zh-Hant": "極端高溫，建議取消",
+        "en": "Extreme heat, consider cancelling",
+    },
+    "weather.heat_warning": {
+        "zh-Hans": "高温预警，建议选择早晚时段",
+        "zh-Hant": "高溫預警，建議選擇早晚時段",
+        "en": "High temperature warning, consider early or late hours",
+    },
+    "weather.uv_warning": {
+        "zh-Hans": "紫外线强烈，请注意防晒",
+        "zh-Hant": "紫外線強烈，請注意防曬",
+        "en": "Strong UV, please wear sunscreen",
+    },
+    "weather.rain_possible": {
+        "zh-Hans": "有降雨可能，建议携带雨具",
+        "zh-Hant": "有降雨可能，建議攜帶雨具",
+        "en": "Possible rain, consider bringing an umbrella",
+    },
+    "weather.court_no_coordinates": {
+        "zh-Hans": "该球场缺少坐标信息",
+        "zh-Hant": "該球場缺少坐標資訊",
+        "en": "This court has no location coordinates",
+    },
+    "weather.date_out_of_range": {
+        "zh-Hans": "日期必须在今天到未来7天之间",
+        "zh-Hant": "日期必須在今天到未來7天之間",
+        "en": "Date must be between today and 7 days from now",
+    },
+    "weather.service_unavailable": {
+        "zh-Hans": "天气服务暂时不可用",
+        "zh-Hant": "天氣服務暫時不可用",
+        "en": "Weather service temporarily unavailable",
+    },
 }
 
 
