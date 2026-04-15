@@ -19,6 +19,12 @@ class Settings(BaseSettings):
     default_language: str = "zh-Hant"
     supported_languages: str = "zh-Hans,zh-Hant,en"
 
+    # LLM / Booking Assistant
+    llm_provider: str = "claude"
+    anthropic_api_key: str = ""
+    anthropic_model: str = "claude-sonnet-4-20250514"
+    assistant_rate_limit: int = 10  # per user per hour
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 
