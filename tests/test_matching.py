@@ -5,8 +5,14 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
+
 from app.models.court import Court, CourtType
+from app.models.matching import MatchPreference, MatchTimeSlot, MatchPreferenceCourt, MatchTypePreference, GenderPreference
 from app.models.user import AuthProvider, User
+from app.services.matching import compute_match_score
+from app.services.user import create_user_with_auth
 
 
 async def _register_and_get_token(
@@ -180,3 +186,146 @@ async def test_toggle_preference(client: AsyncClient, session: AsyncSession):
     resp = await client.patch("/api/v1/matching/preferences/toggle", headers=_auth(token))
     assert resp.status_code == 200
     assert resp.json()["is_active"] is True
+
+
+# --- Scoring Helper Functions ---
+
+
+async def _create_user_direct(session: AsyncSession, username: str, **kwargs) -> User:
+    defaults = {
+        "nickname": f"Player_{username}",
+        "gender": "male",
+        "city": "Hong Kong",
+        "ntrp_level": "3.5",
+        "language": "en",
+        "provider": AuthProvider.USERNAME,
+        "provider_user_id": username,
+        "password": "test1234",
+    }
+    defaults.update(kwargs)
+    return await create_user_with_auth(session, **defaults)
+
+
+async def _create_preference_direct(
+    session: AsyncSession,
+    user_id: uuid.UUID,
+    *,
+    min_ntrp: str = "3.0",
+    max_ntrp: str = "4.0",
+    slots: list[tuple[int, str, str]] | None = None,
+    court_ids: list[uuid.UUID] | None = None,
+    gender_preference: str = "any",
+    match_type: str = "singles",
+) -> MatchPreference:
+    pref = MatchPreference(
+        user_id=user_id,
+        match_type=MatchTypePreference(match_type),
+        min_ntrp=min_ntrp,
+        max_ntrp=max_ntrp,
+        gender_preference=GenderPreference(gender_preference),
+    )
+    session.add(pref)
+    await session.flush()
+
+    if slots is None:
+        slots = [(5, "09:00", "12:00")]
+    for day, start, end in slots:
+        ts = MatchTimeSlot(
+            preference_id=pref.id,
+            day_of_week=day,
+            start_time=time.fromisoformat(start),
+            end_time=time.fromisoformat(end),
+        )
+        session.add(ts)
+
+    for cid in (court_ids or []):
+        pc = MatchPreferenceCourt(preference_id=pref.id, court_id=cid)
+        session.add(pc)
+
+    await session.commit()
+    # Eagerly reload with relationships to avoid lazy-load issues in async
+    result = await session.execute(
+        select(MatchPreference)
+        .options(
+            selectinload(MatchPreference.time_slots),
+            selectinload(MatchPreference.preferred_courts),
+        )
+        .where(MatchPreference.id == pref.id)
+    )
+    return result.scalar_one()
+
+
+# --- Scoring Tests ---
+
+
+@pytest.mark.asyncio
+async def test_score_perfect_match(client: AsyncClient, session: AsyncSession):
+    """Two users with identical preferences should get a high score."""
+    user_a = await _create_user_direct(session, "score_a")
+    user_b = await _create_user_direct(session, "score_b")
+    court = await _seed_court(session)
+
+    pref_a = await _create_preference_direct(session, user_a.id, court_ids=[court.id])
+    pref_b = await _create_preference_direct(session, user_b.id, court_ids=[court.id])
+
+    score = await compute_match_score(session, user_a, pref_a, user_b, pref_b)
+    assert score is not None
+    assert score >= 80  # High score for perfect overlap
+
+
+@pytest.mark.asyncio
+async def test_score_ntrp_too_far(client: AsyncClient, session: AsyncSession):
+    """NTRP gap > 1.5 should return None (filtered out)."""
+    user_a = await _create_user_direct(session, "score_c", ntrp_level="2.0")
+    user_b = await _create_user_direct(session, "score_d", ntrp_level="4.5")
+
+    pref_a = await _create_preference_direct(session, user_a.id, min_ntrp="1.5", max_ntrp="2.5")
+    pref_b = await _create_preference_direct(session, user_b.id, min_ntrp="4.0", max_ntrp="5.0")
+
+    score = await compute_match_score(session, user_a, pref_a, user_b, pref_b)
+    assert score is None
+
+
+@pytest.mark.asyncio
+async def test_score_no_time_overlap(client: AsyncClient, session: AsyncSession):
+    """No overlapping time slots should return None."""
+    user_a = await _create_user_direct(session, "score_e")
+    user_b = await _create_user_direct(session, "score_f")
+
+    pref_a = await _create_preference_direct(session, user_a.id, slots=[(0, "09:00", "12:00")])  # Monday
+    pref_b = await _create_preference_direct(session, user_b.id, slots=[(5, "14:00", "17:00")])  # Saturday
+
+    score = await compute_match_score(session, user_a, pref_a, user_b, pref_b)
+    assert score is None
+
+
+@pytest.mark.asyncio
+async def test_score_gender_filter(client: AsyncClient, session: AsyncSession):
+    """Gender mismatch with preference should return None."""
+    user_a = await _create_user_direct(session, "score_g", gender="male")
+    user_b = await _create_user_direct(session, "score_h", gender="male")
+
+    pref_a = await _create_preference_direct(session, user_a.id, gender_preference="female_only")
+    pref_b = await _create_preference_direct(session, user_b.id)
+
+    score = await compute_match_score(session, user_a, pref_a, user_b, pref_b)
+    assert score is None
+
+
+@pytest.mark.asyncio
+async def test_score_ideal_player_bonus(client: AsyncClient, session: AsyncSession):
+    """Ideal player should score higher than non-ideal with same stats."""
+    user_a = await _create_user_direct(session, "score_i")
+    user_b = await _create_user_direct(session, "score_j")
+    user_c = await _create_user_direct(session, "score_k")
+    user_c.is_ideal_player = True
+    await session.commit()
+
+    court = await _seed_court(session)
+    pref_a = await _create_preference_direct(session, user_a.id, court_ids=[court.id])
+    pref_b = await _create_preference_direct(session, user_b.id, court_ids=[court.id])
+    pref_c = await _create_preference_direct(session, user_c.id, court_ids=[court.id])
+
+    score_b = await compute_match_score(session, user_a, pref_a, user_b, pref_b)
+    score_c = await compute_match_score(session, user_a, pref_a, user_c, pref_c)
+    assert score_c > score_b
