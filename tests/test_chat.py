@@ -552,3 +552,58 @@ async def test_participant_accepted_after_room_exists(client: AsyncClient, sessi
     session.expire_all()
     room = await get_room_by_booking_id(session, uuid.UUID(booking_id))
     assert len(room.participants) == 3
+
+
+# --- WebSocket Tests ---
+
+
+@pytest.mark.asyncio
+async def test_websocket_send_and_receive(client: AsyncClient, session: AsyncSession):
+    token1, token2, uid1, uid2, booking_id, room = await _setup_confirmed_booking_with_room(client, session)
+
+    app = client._transport.app  # noqa: access underlying ASGI app
+
+    # Patch async_session in the chat router to use test DB
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine, AsyncSession as AS
+    test_engine = create_async_engine("postgresql+asyncpg://postgres:postgres@localhost:5432/lets_tennis_test", echo=False)
+    test_session_factory = async_sessionmaker(test_engine, class_=AS, expire_on_commit=False)
+
+    import app.routers.chat as chat_mod
+    original = chat_mod.async_session
+    chat_mod.async_session = test_session_factory
+
+    from starlette.testclient import TestClient
+
+    try:
+        with TestClient(app) as sync_client:
+            with sync_client.websocket_connect(f"/api/v1/chat/ws?token={token1}") as ws1:
+                # Send ping
+                ws1.send_text("ping")
+                resp = ws1.receive_text()
+                assert resp == "pong"
+
+                # Send a message
+                ws1.send_json({
+                    "action": "send",
+                    "room_id": str(room.id),
+                    "type": "text",
+                    "content": "Hello via WS!",
+                })
+                ack = ws1.receive_json()
+                assert ack["event"] == "ack"
+                assert "id" in ack["data"]
+    finally:
+        chat_mod.async_session = original
+        await test_engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_websocket_invalid_token(client: AsyncClient, session: AsyncSession):
+    app = client._transport.app
+
+    from starlette.testclient import TestClient
+
+    with TestClient(app) as sync_client:
+        with pytest.raises(Exception):
+            with sync_client.websocket_connect("/api/v1/chat/ws?token=invalid_token"):
+                pass

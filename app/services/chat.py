@@ -1,5 +1,6 @@
 import uuid
 
+from fastapi import WebSocket
 from sqlalchemy import func as sa_func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -7,6 +8,42 @@ from sqlalchemy.orm import selectinload
 from app.models.booking import Booking, MatchType
 from app.models.chat import ChatParticipant, ChatRoom, Message, MessageType, RoomType
 from app.services.word_filter import contains_blocked_word
+
+
+class ConnectionManager:
+    def __init__(self):
+        self.connections: dict[uuid.UUID, WebSocket] = {}
+
+    async def connect(self, user_id: uuid.UUID, ws: WebSocket) -> None:
+        # Replace existing connection if any
+        if user_id in self.connections:
+            try:
+                await self.connections[user_id].close()
+            except Exception:
+                pass
+        self.connections[user_id] = ws
+
+    async def disconnect(self, user_id: uuid.UUID) -> None:
+        self.connections.pop(user_id, None)
+
+    async def broadcast_to_room(
+        self,
+        participant_ids: list[uuid.UUID],
+        message: dict,
+        exclude: uuid.UUID | None = None,
+    ) -> None:
+        for uid in participant_ids:
+            if uid == exclude:
+                continue
+            ws = self.connections.get(uid)
+            if ws:
+                try:
+                    await ws.send_json(message)
+                except Exception:
+                    self.connections.pop(uid, None)
+
+
+manager = ConnectionManager()
 
 
 async def create_chat_room(
