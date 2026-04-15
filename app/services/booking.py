@@ -20,6 +20,7 @@ from app.models.notification import NotificationType
 from app.models.user import Gender, User
 from app.services.credit import apply_credit_change
 from app.services.notification import create_notification
+from app.services.chat import create_chat_room
 from app.services.weather import check_free_cancel
 
 
@@ -199,6 +200,11 @@ async def confirm_booking(session: AsyncSession, booking: Booking) -> Booking:
                 target_type="booking",
                 target_id=booking.id,
             )
+    # Create chat room for confirmed booking
+    accepted_ids = [p.user_id for p in booking.participants if p.status == ParticipantStatus.ACCEPTED]
+    court = booking.court or await session.get(Court, booking.court_id)
+    court_name = court.name if court else ""
+    await create_chat_room(session, booking=booking, participant_ids=accepted_ids, court_name=court_name)
     await session.commit()
     await session.refresh(booking)
     return booking
