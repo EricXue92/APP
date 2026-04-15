@@ -455,3 +455,254 @@ async def test_search_booking_recommendations(client: AsyncClient, session: Asyn
     assert len(data) >= 1
     assert data[0]["creator_nickname"] == "Player_brec_b"
     assert data[0]["score"] > 0
+
+
+# --- Proposal Tests ---
+
+
+@pytest.mark.asyncio
+async def test_create_proposal(client: AsyncClient, session: AsyncSession):
+    token_a, uid_a = await _register_and_get_token(client, "prop_a")
+    token_b, uid_b = await _register_and_get_token(client, "prop_b")
+    court = await _seed_court(session)
+
+    resp = await client.post(
+        "/api/v1/matching/proposals",
+        headers=_auth(token_a),
+        json={
+            "target_id": uid_b,
+            "court_id": str(court.id),
+            "match_type": "singles",
+            "play_date": (date.today() + timedelta(days=7)).isoformat(),
+            "start_time": "10:00:00",
+            "end_time": "12:00:00",
+            "message": "Want to play?",
+        },
+    )
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["status"] == "pending"
+    assert data["proposer_id"] == uid_a
+    assert data["target_id"] == uid_b
+    assert data["message"] == "Want to play?"
+
+
+@pytest.mark.asyncio
+async def test_create_proposal_to_self(client: AsyncClient, session: AsyncSession):
+    token, uid = await _register_and_get_token(client, "prop_c")
+    court = await _seed_court(session)
+
+    resp = await client.post(
+        "/api/v1/matching/proposals",
+        headers=_auth(token),
+        json={
+            "target_id": uid,
+            "court_id": str(court.id),
+            "play_date": (date.today() + timedelta(days=7)).isoformat(),
+            "start_time": "10:00:00",
+            "end_time": "12:00:00",
+        },
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_create_proposal_duplicate_pending(client: AsyncClient, session: AsyncSession):
+    token_a, uid_a = await _register_and_get_token(client, "prop_d")
+    token_b, uid_b = await _register_and_get_token(client, "prop_e")
+    court = await _seed_court(session)
+
+    body = {
+        "target_id": uid_b,
+        "court_id": str(court.id),
+        "play_date": (date.today() + timedelta(days=7)).isoformat(),
+        "start_time": "10:00:00",
+        "end_time": "12:00:00",
+    }
+    resp1 = await client.post("/api/v1/matching/proposals", headers=_auth(token_a), json=body)
+    assert resp1.status_code == 201
+
+    resp2 = await client.post("/api/v1/matching/proposals", headers=_auth(token_a), json=body)
+    assert resp2.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_create_proposal_blocked(client: AsyncClient, session: AsyncSession):
+    token_a, uid_a = await _register_and_get_token(client, "prop_f")
+    token_b, uid_b = await _register_and_get_token(client, "prop_g")
+    court = await _seed_court(session)
+
+    await client.post("/api/v1/blocks", headers=_auth(token_a), json={"blocked_id": uid_b})
+
+    resp = await client.post(
+        "/api/v1/matching/proposals",
+        headers=_auth(token_a),
+        json={
+            "target_id": uid_b,
+            "court_id": str(court.id),
+            "play_date": (date.today() + timedelta(days=7)).isoformat(),
+            "start_time": "10:00:00",
+            "end_time": "12:00:00",
+        },
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_create_proposal_daily_cap(client: AsyncClient, session: AsyncSession):
+    token_a, uid_a = await _register_and_get_token(client, "prop_cap")
+    court = await _seed_court(session)
+
+    # Create 5 proposals to 5 different users (daily cap)
+    for i in range(5):
+        t_b, uid_b = await _register_and_get_token(client, f"prop_cap_target_{i}")
+        resp = await client.post(
+            "/api/v1/matching/proposals",
+            headers=_auth(token_a),
+            json={
+                "target_id": uid_b,
+                "court_id": str(court.id),
+                "play_date": (date.today() + timedelta(days=7)).isoformat(),
+                "start_time": "10:00:00",
+                "end_time": "12:00:00",
+            },
+        )
+        assert resp.status_code == 201
+
+    # 6th proposal should be rejected
+    t_last, uid_last = await _register_and_get_token(client, "prop_cap_target_last")
+    resp = await client.post(
+        "/api/v1/matching/proposals",
+        headers=_auth(token_a),
+        json={
+            "target_id": uid_last,
+            "court_id": str(court.id),
+            "play_date": (date.today() + timedelta(days=7)).isoformat(),
+            "start_time": "10:00:00",
+            "end_time": "12:00:00",
+        },
+    )
+    assert resp.status_code == 429
+
+
+@pytest.mark.asyncio
+async def test_accept_proposal_creates_booking(client: AsyncClient, session: AsyncSession):
+    token_a, uid_a = await _register_and_get_token(client, "prop_acc_a")
+    token_b, uid_b = await _register_and_get_token(client, "prop_acc_b")
+    court = await _seed_court(session)
+
+    resp = await client.post(
+        "/api/v1/matching/proposals",
+        headers=_auth(token_a),
+        json={
+            "target_id": uid_b,
+            "court_id": str(court.id),
+            "match_type": "singles",
+            "play_date": (date.today() + timedelta(days=7)).isoformat(),
+            "start_time": "10:00:00",
+            "end_time": "12:00:00",
+        },
+    )
+    proposal_id = resp.json()["id"]
+
+    # Target accepts
+    resp = await client.patch(
+        f"/api/v1/matching/proposals/{proposal_id}",
+        headers=_auth(token_b),
+        json={"status": "accepted"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "accepted"
+
+    # Verify booking was created
+    resp = await client.get("/api/v1/bookings/my", headers=_auth(token_a))
+    assert resp.status_code == 200
+    bookings = resp.json()
+    assert len(bookings) >= 1
+    assert bookings[0]["status"] == "open"
+
+
+@pytest.mark.asyncio
+async def test_reject_proposal(client: AsyncClient, session: AsyncSession):
+    token_a, uid_a = await _register_and_get_token(client, "prop_rej_a")
+    token_b, uid_b = await _register_and_get_token(client, "prop_rej_b")
+    court = await _seed_court(session)
+
+    resp = await client.post(
+        "/api/v1/matching/proposals",
+        headers=_auth(token_a),
+        json={
+            "target_id": uid_b,
+            "court_id": str(court.id),
+            "play_date": (date.today() + timedelta(days=7)).isoformat(),
+            "start_time": "10:00:00",
+            "end_time": "12:00:00",
+        },
+    )
+    proposal_id = resp.json()["id"]
+
+    resp = await client.patch(
+        f"/api/v1/matching/proposals/{proposal_id}",
+        headers=_auth(token_b),
+        json={"status": "rejected"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "rejected"
+
+
+@pytest.mark.asyncio
+async def test_respond_not_target(client: AsyncClient, session: AsyncSession):
+    """Only the target can respond to a proposal."""
+    token_a, uid_a = await _register_and_get_token(client, "prop_nt_a")
+    token_b, uid_b = await _register_and_get_token(client, "prop_nt_b")
+    court = await _seed_court(session)
+
+    resp = await client.post(
+        "/api/v1/matching/proposals",
+        headers=_auth(token_a),
+        json={
+            "target_id": uid_b,
+            "court_id": str(court.id),
+            "play_date": (date.today() + timedelta(days=7)).isoformat(),
+            "start_time": "10:00:00",
+            "end_time": "12:00:00",
+        },
+    )
+    proposal_id = resp.json()["id"]
+
+    # Proposer tries to accept their own proposal
+    resp = await client.patch(
+        f"/api/v1/matching/proposals/{proposal_id}",
+        headers=_auth(token_a),
+        json={"status": "accepted"},
+    )
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_list_proposals(client: AsyncClient, session: AsyncSession):
+    token_a, uid_a = await _register_and_get_token(client, "prop_list_a")
+    token_b, uid_b = await _register_and_get_token(client, "prop_list_b")
+    court = await _seed_court(session)
+
+    await client.post(
+        "/api/v1/matching/proposals",
+        headers=_auth(token_a),
+        json={
+            "target_id": uid_b,
+            "court_id": str(court.id),
+            "play_date": (date.today() + timedelta(days=7)).isoformat(),
+            "start_time": "10:00:00",
+            "end_time": "12:00:00",
+        },
+    )
+
+    # Proposer sees it as sent
+    resp = await client.get("/api/v1/matching/proposals?direction=sent", headers=_auth(token_a))
+    assert resp.status_code == 200
+    assert len(resp.json()) == 1
+
+    # Target sees it as received
+    resp = await client.get("/api/v1/matching/proposals?direction=received", headers=_auth(token_b))
+    assert resp.status_code == 200
+    assert len(resp.json()) == 1

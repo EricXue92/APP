@@ -1,4 +1,6 @@
-from fastapi import APIRouter, HTTPException, status
+import uuid
+
+from fastapi import APIRouter, HTTPException, Query, status
 
 from app.dependencies import CurrentUser, DbSession, Lang
 from app.i18n import t
@@ -7,8 +9,16 @@ from app.schemas.matching import (
     CandidateResponse,
     PreferenceCreateRequest,
     PreferenceResponse,
+    ProposalCreateRequest,
+    ProposalRespondRequest,
+    ProposalResponse,
     TimeSlotResponse,
     ToggleResponse,
+)
+from app.services.match_proposal import (
+    create_proposal,
+    list_proposals,
+    respond_to_proposal,
 )
 from app.services.matching import (
     create_preference,
@@ -125,3 +135,94 @@ async def find_booking_recommendations(user: CurrentUser, session: DbSession, la
 
     bookings = await search_booking_recommendations(session, user, pref)
     return bookings
+
+
+# --- Proposal endpoints ---
+
+
+def _proposal_to_response(proposal) -> ProposalResponse:
+    return ProposalResponse(
+        id=proposal.id,
+        proposer_id=proposal.proposer_id,
+        proposer_nickname=proposal.proposer.nickname,
+        target_id=proposal.target_id,
+        target_nickname=proposal.target.nickname,
+        court_id=proposal.court_id,
+        court_name=proposal.court.name,
+        match_type=proposal.match_type,
+        play_date=proposal.play_date,
+        start_time=proposal.start_time,
+        end_time=proposal.end_time,
+        message=proposal.message,
+        status=proposal.status.value,
+        created_at=proposal.created_at,
+        responded_at=proposal.responded_at,
+    )
+
+
+@router.post("/proposals", response_model=ProposalResponse, status_code=status.HTTP_201_CREATED)
+async def create_match_proposal(body: ProposalCreateRequest, user: CurrentUser, session: DbSession, lang: Lang):
+    try:
+        proposal = await create_proposal(
+            session,
+            proposer=user,
+            target_id=body.target_id,
+            court_id=body.court_id,
+            match_type=body.match_type,
+            play_date=body.play_date,
+            start_time=body.start_time,
+            end_time=body.end_time,
+            message=body.message,
+            lang=lang,
+        )
+    except ValueError as e:
+        msg = str(e)
+        if msg == "cannot_propose_self":
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=t("matching.cannot_propose_self", lang))
+        if msg == "target_not_found":
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=t("matching.target_not_found", lang))
+        if msg == "blocked":
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=t("block.user_blocked", lang))
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=msg)
+    except LookupError:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=t("matching.duplicate_pending", lang))
+    except PermissionError:
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=t("matching.proposal_daily_cap", lang))
+    return _proposal_to_response(proposal)
+
+
+@router.get("/proposals", response_model=list[ProposalResponse])
+async def get_proposals(
+    user: CurrentUser,
+    session: DbSession,
+    direction: str | None = Query(default=None, pattern=r"^(sent|received)$"),
+    proposal_status: str | None = Query(default=None, alias="status", pattern=r"^(pending|accepted|rejected|expired)$"),
+):
+    proposals = await list_proposals(session, user.id, direction=direction, status_filter=proposal_status)
+    return [_proposal_to_response(p) for p in proposals]
+
+
+@router.patch("/proposals/{proposal_id}", response_model=ProposalResponse)
+async def respond_to_match_proposal(
+    proposal_id: str, body: ProposalRespondRequest, user: CurrentUser, session: DbSession, lang: Lang
+):
+    try:
+        proposal = await respond_to_proposal(
+            session,
+            proposal_id=uuid.UUID(proposal_id),
+            responder=user,
+            new_status=body.status,
+            lang=lang,
+        )
+    except ValueError as e:
+        msg = str(e)
+        if msg == "proposal_not_found":
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=t("matching.proposal_not_found", lang))
+        if msg == "proposal_not_pending":
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=t("matching.proposal_not_pending", lang))
+        if msg == "proposer_suspended":
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=t("matching.proposer_suspended", lang))
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=msg)
+    except PermissionError:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=t("matching.proposal_not_target", lang))
+    return _proposal_to_response(proposal)
