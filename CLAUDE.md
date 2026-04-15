@@ -39,12 +39,13 @@ uv run alembic upgrade head
 | Report | `report.py` | Polymorphic target (`target_type` + `target_id`). Admin resolve at `/api/v1/admin/reports`. |
 | Block | `block.py` | Symmetric + silent. `is_blocked(session, a, b)` checks both directions. Hard delete on unblock. |
 | Follow | `follow.py` | Unidirectional, mutual detected at read time. Removed on block. |
-| Notification | `notification.py` | In-app polling (no push). 18 types. `create_notification()` internal-only. |
+| Notification | `notification.py` | In-app polling (no push). 29 types. `create_notification()` internal-only. |
 | Ideal Player 理想球友 | `ideal_player.py` (svc only) | Auto-evaluated badge on User. Priority sort in listings. |
 | Assistant 约球助理 | `llm.py` + `assistant.py` | NL → booking fields via LLM. Add providers: implement `LLMProvider` protocol. |
 | Matching 智能匹配 | `matching.py` + `match_proposal.py` | `MatchPreference` → scored candidates → `MatchProposal` (pending/accepted/rejected/expired). Accept = auto-create booking. |
 | Weather 天气 | `weather.py` | QWeather API, Redis-cached. Bad weather → `allows_free_cancel` (waives credit penalty). |
 | Chat 聊天 | `chat.py` | WebSocket + REST. Auto-created rooms on booking confirm. `ConnectionManager` for WS. |
+| Event 赛事 | `event.py` | Elimination + round-robin tournaments. Lifecycle: `draft → open → in_progress → completed/cancelled`. Seeded draws, structured scoring, dual-confirmation. |
 
 ### Database
 

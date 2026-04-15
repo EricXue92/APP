@@ -17,15 +17,24 @@ from app.schemas.event import (
     StandingsEntry,
 )
 from app.services.event import (
+    cancel_event,
+    confirm_score,
     create_event,
+    dispute_score,
+    get_bracket,
     get_event_by_id,
     get_event_matches,
+    get_match_by_id,
+    get_standings,
     join_event,
     list_events,
     list_my_events,
+    organizer_set_score,
     publish_event,
     remove_participant,
     start_event,
+    submit_score,
+    submit_walkover,
     update_event,
     withdraw_from_event,
 )
@@ -228,6 +237,18 @@ async def start_existing_event(event_id: str, user: CurrentUser, session: DbSess
     return _event_to_response(event, include_participants=True)
 
 
+@router.post("/{event_id}/cancel", response_model=EventDetailResponse)
+async def cancel_existing_event(event_id: str, user: CurrentUser, session: DbSession, lang: Lang):
+    event = await get_event_by_id(session, uuid.UUID(event_id))
+    if event is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=t("event.not_found", lang))
+    if event.creator_id != user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=t("event.not_creator", lang))
+
+    event = await cancel_event(session, event, lang)
+    return _event_to_response(event, include_participants=True)
+
+
 @router.get("/{event_id}/matches", response_model=list[EventMatchResponse])
 async def get_matches(
     event_id: str,
@@ -243,3 +264,99 @@ async def get_matches(
 
     matches = await get_event_matches(session, event.id, round=round, group_name=group)
     return matches
+
+
+@router.get("/{event_id}/bracket")
+async def get_event_bracket(event_id: str, session: DbSession, user: CurrentUser, lang: Lang):
+    event = await get_event_by_id(session, uuid.UUID(event_id))
+    if event is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=t("event.not_found", lang))
+    return await get_bracket(session, event.id)
+
+
+@router.get("/{event_id}/standings", response_model=list[StandingsEntry])
+async def get_event_standings(event_id: str, session: DbSession, user: CurrentUser, lang: Lang):
+    event = await get_event_by_id(session, uuid.UUID(event_id))
+    if event is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=t("event.not_found", lang))
+    return await get_standings(session, event.id)
+
+
+@router.post("/matches/{match_id}/score", response_model=EventMatchResponse)
+async def submit_match_score(match_id: str, body: ScoreSubmitRequest, user: CurrentUser, session: DbSession, lang: Lang):
+    match = await get_match_by_id(session, uuid.UUID(match_id))
+    if match is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=t("event.match_not_found", lang))
+
+    try:
+        match = await submit_score(session, match, user.id, [s.model_dump() for s in body.sets], lang)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+
+    return match
+
+
+@router.post("/matches/{match_id}/confirm", response_model=EventMatchResponse)
+async def confirm_match_score(match_id: str, user: CurrentUser, session: DbSession, lang: Lang):
+    match = await get_match_by_id(session, uuid.UUID(match_id))
+    if match is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=t("event.match_not_found", lang))
+
+    try:
+        match = await confirm_score(session, match, user.id, lang)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+
+    return match
+
+
+@router.post("/matches/{match_id}/dispute", response_model=EventMatchResponse)
+async def dispute_match_score(match_id: str, user: CurrentUser, session: DbSession, lang: Lang):
+    match = await get_match_by_id(session, uuid.UUID(match_id))
+    if match is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=t("event.match_not_found", lang))
+
+    try:
+        match = await dispute_score(session, match, user.id, lang)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+
+    return match
+
+
+@router.post("/matches/{match_id}/walkover", response_model=EventMatchResponse)
+async def submit_match_walkover(match_id: str, user: CurrentUser, session: DbSession, lang: Lang):
+    match = await get_match_by_id(session, uuid.UUID(match_id))
+    if match is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=t("event.match_not_found", lang))
+
+    try:
+        match = await submit_walkover(session, match, user.id, lang)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+
+    return match
+
+
+@router.patch("/matches/{match_id}/score", response_model=EventMatchResponse)
+async def organizer_override_score(match_id: str, body: ScoreSubmitRequest, user: CurrentUser, session: DbSession, lang: Lang):
+    match = await get_match_by_id(session, uuid.UUID(match_id))
+    if match is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=t("event.match_not_found", lang))
+
+    try:
+        match = await organizer_set_score(session, match, user.id, [s.model_dump() for s in body.sets], lang)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+
+    return match

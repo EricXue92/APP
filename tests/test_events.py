@@ -410,3 +410,402 @@ async def test_start_round_robin_event(client: AsyncClient, session: AsyncSessio
     assert len(groups) == 2
     assert "A" in groups
     assert "B" in groups
+
+
+@pytest.mark.asyncio
+async def test_submit_score(client: AsyncClient, session: AsyncSession):
+    """Submit a valid score for a round-robin match."""
+    org_token, org_id = await _register_and_get_token(client, "sc_org", ntrp="3.5")
+
+    resp = await client.post(
+        "/api/v1/events",
+        headers={"Authorization": f"Bearer {org_token}"},
+        json={
+            "name": "Score Cup",
+            "event_type": "round_robin",
+            "min_ntrp": "3.0",
+            "max_ntrp": "4.0",
+            "max_participants": 6,
+            "games_per_set": 6,
+            "num_sets": 3,
+            "registration_deadline": _future_deadline(),
+        },
+    )
+    event_id = resp.json()["id"]
+    await client.post(f"/api/v1/events/{event_id}/publish", headers={"Authorization": f"Bearer {org_token}"})
+
+    player_tokens = []
+    for i in range(3):
+        tk, pid = await _register_and_get_token(client, f"sc_p{i}", ntrp="3.5")
+        player_tokens.append((tk, pid))
+        await client.post(f"/api/v1/events/{event_id}/join", headers={"Authorization": f"Bearer {tk}"})
+
+    await client.post(f"/api/v1/events/{event_id}/start", headers={"Authorization": f"Bearer {org_token}"})
+
+    resp = await client.get(f"/api/v1/events/{event_id}/matches", headers={"Authorization": f"Bearer {org_token}"})
+    matches = resp.json()
+    match_id = matches[0]["id"]
+    submitter_id = matches[0]["player_a_id"]
+
+    submitter_token = next(tk for tk, pid in player_tokens if pid == submitter_id)
+
+    # Submit score: 6-4 6-3 (player A wins in 2 sets)
+    resp = await client.post(
+        f"/api/v1/events/matches/{match_id}/score",
+        headers={"Authorization": f"Bearer {submitter_token}"},
+        json={
+            "sets": [
+                {"set_number": 1, "score_a": 6, "score_b": 4},
+                {"set_number": 2, "score_a": 6, "score_b": 3},
+            ]
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "submitted"
+    assert data["winner_id"] == submitter_id
+    assert len(data["sets"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_submit_score_invalid(client: AsyncClient, session: AsyncSession):
+    """Submit an invalid score (e.g., 6-5 without tiebreak) — should fail."""
+    org_token, _ = await _register_and_get_token(client, "inv_org", ntrp="3.5")
+
+    resp = await client.post(
+        "/api/v1/events",
+        headers={"Authorization": f"Bearer {org_token}"},
+        json={
+            "name": "Invalid Cup",
+            "event_type": "round_robin",
+            "min_ntrp": "3.0",
+            "max_ntrp": "4.0",
+            "max_participants": 6,
+            "games_per_set": 6,
+            "num_sets": 3,
+            "registration_deadline": _future_deadline(),
+        },
+    )
+    event_id = resp.json()["id"]
+    await client.post(f"/api/v1/events/{event_id}/publish", headers={"Authorization": f"Bearer {org_token}"})
+
+    player_tokens = []
+    for i in range(3):
+        tk, pid = await _register_and_get_token(client, f"inv_p{i}", ntrp="3.5")
+        player_tokens.append((tk, pid))
+        await client.post(f"/api/v1/events/{event_id}/join", headers={"Authorization": f"Bearer {tk}"})
+
+    await client.post(f"/api/v1/events/{event_id}/start", headers={"Authorization": f"Bearer {org_token}"})
+
+    resp = await client.get(f"/api/v1/events/{event_id}/matches", headers={"Authorization": f"Bearer {org_token}"})
+    match_id = resp.json()[0]["id"]
+    submitter_id = resp.json()[0]["player_a_id"]
+    submitter_token = next(tk for tk, pid in player_tokens if pid == submitter_id)
+
+    # Invalid: 6-5 without tiebreak
+    resp = await client.post(
+        f"/api/v1/events/matches/{match_id}/score",
+        headers={"Authorization": f"Bearer {submitter_token}"},
+        json={
+            "sets": [
+                {"set_number": 1, "score_a": 6, "score_b": 5},
+            ]
+        },
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_confirm_score(client: AsyncClient, session: AsyncSession):
+    """After submitting, the opponent confirms the score."""
+    org_token, _ = await _register_and_get_token(client, "cf_org", ntrp="3.5")
+
+    resp = await client.post(
+        "/api/v1/events",
+        headers={"Authorization": f"Bearer {org_token}"},
+        json={
+            "name": "Confirm Cup",
+            "event_type": "round_robin",
+            "min_ntrp": "3.0",
+            "max_ntrp": "4.0",
+            "max_participants": 6,
+            "games_per_set": 6,
+            "num_sets": 3,
+            "registration_deadline": _future_deadline(),
+        },
+    )
+    event_id = resp.json()["id"]
+    await client.post(f"/api/v1/events/{event_id}/publish", headers={"Authorization": f"Bearer {org_token}"})
+
+    player_tokens = []
+    for i in range(3):
+        tk, pid = await _register_and_get_token(client, f"cf_p{i}", ntrp="3.5")
+        player_tokens.append((tk, pid))
+        await client.post(f"/api/v1/events/{event_id}/join", headers={"Authorization": f"Bearer {tk}"})
+
+    await client.post(f"/api/v1/events/{event_id}/start", headers={"Authorization": f"Bearer {org_token}"})
+
+    resp = await client.get(f"/api/v1/events/{event_id}/matches", headers={"Authorization": f"Bearer {org_token}"})
+    match = resp.json()[0]
+    match_id = match["id"]
+
+    # Find tokens for both players
+    a_token = next(tk for tk, pid in player_tokens if pid == match["player_a_id"])
+    b_token = next(tk for tk, pid in player_tokens if pid == match["player_b_id"])
+
+    # Player A submits
+    await client.post(
+        f"/api/v1/events/matches/{match_id}/score",
+        headers={"Authorization": f"Bearer {a_token}"},
+        json={"sets": [{"set_number": 1, "score_a": 6, "score_b": 4}, {"set_number": 2, "score_a": 6, "score_b": 3}]},
+    )
+
+    # Player B confirms
+    resp = await client.post(
+        f"/api/v1/events/matches/{match_id}/confirm",
+        headers={"Authorization": f"Bearer {b_token}"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "confirmed"
+    assert resp.json()["confirmed_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_dispute_score(client: AsyncClient, session: AsyncSession):
+    org_token, _ = await _register_and_get_token(client, "dp_org", ntrp="3.5")
+
+    resp = await client.post(
+        "/api/v1/events",
+        headers={"Authorization": f"Bearer {org_token}"},
+        json={
+            "name": "Dispute Cup",
+            "event_type": "round_robin",
+            "min_ntrp": "3.0",
+            "max_ntrp": "4.0",
+            "max_participants": 6,
+            "games_per_set": 6,
+            "num_sets": 3,
+            "registration_deadline": _future_deadline(),
+        },
+    )
+    event_id = resp.json()["id"]
+    await client.post(f"/api/v1/events/{event_id}/publish", headers={"Authorization": f"Bearer {org_token}"})
+
+    player_tokens = []
+    for i in range(3):
+        tk, pid = await _register_and_get_token(client, f"dp_p{i}", ntrp="3.5")
+        player_tokens.append((tk, pid))
+        await client.post(f"/api/v1/events/{event_id}/join", headers={"Authorization": f"Bearer {tk}"})
+
+    await client.post(f"/api/v1/events/{event_id}/start", headers={"Authorization": f"Bearer {org_token}"})
+
+    resp = await client.get(f"/api/v1/events/{event_id}/matches", headers={"Authorization": f"Bearer {org_token}"})
+    match = resp.json()[0]
+    match_id = match["id"]
+    a_token = next(tk for tk, pid in player_tokens if pid == match["player_a_id"])
+    b_token = next(tk for tk, pid in player_tokens if pid == match["player_b_id"])
+
+    await client.post(
+        f"/api/v1/events/matches/{match_id}/score",
+        headers={"Authorization": f"Bearer {a_token}"},
+        json={"sets": [{"set_number": 1, "score_a": 6, "score_b": 4}, {"set_number": 2, "score_a": 6, "score_b": 3}]},
+    )
+
+    resp = await client.post(
+        f"/api/v1/events/matches/{match_id}/dispute",
+        headers={"Authorization": f"Bearer {b_token}"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "disputed"
+
+
+@pytest.mark.asyncio
+async def test_walkover(client: AsyncClient, session: AsyncSession):
+    """Submit a walkover — absent player gets credit penalty."""
+    org_token, _ = await _register_and_get_token(client, "wo_org", ntrp="3.5")
+
+    resp = await client.post(
+        "/api/v1/events",
+        headers={"Authorization": f"Bearer {org_token}"},
+        json={
+            "name": "WO Cup",
+            "event_type": "round_robin",
+            "min_ntrp": "3.0",
+            "max_ntrp": "4.0",
+            "max_participants": 6,
+            "games_per_set": 6,
+            "num_sets": 3,
+            "registration_deadline": _future_deadline(),
+        },
+    )
+    event_id = resp.json()["id"]
+    await client.post(f"/api/v1/events/{event_id}/publish", headers={"Authorization": f"Bearer {org_token}"})
+
+    player_tokens = []
+    for i in range(3):
+        tk, pid = await _register_and_get_token(client, f"wo_p{i}", ntrp="3.5")
+        player_tokens.append((tk, pid))
+        await client.post(f"/api/v1/events/{event_id}/join", headers={"Authorization": f"Bearer {tk}"})
+
+    await client.post(f"/api/v1/events/{event_id}/start", headers={"Authorization": f"Bearer {org_token}"})
+
+    resp = await client.get(f"/api/v1/events/{event_id}/matches", headers={"Authorization": f"Bearer {org_token}"})
+    match = resp.json()[0]
+    match_id = match["id"]
+    a_token = next(tk for tk, pid in player_tokens if pid == match["player_a_id"])
+
+    # Player A reports player B as absent
+    resp = await client.post(
+        f"/api/v1/events/matches/{match_id}/walkover",
+        headers={"Authorization": f"Bearer {a_token}"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "submitted"  # Needs opponent/organizer confirmation
+
+
+@pytest.mark.asyncio
+async def test_organizer_override_score(client: AsyncClient, session: AsyncSession):
+    """Organizer can directly set/override a match score."""
+    org_token, org_id = await _register_and_get_token(client, "ov_org", ntrp="3.5")
+
+    resp = await client.post(
+        "/api/v1/events",
+        headers={"Authorization": f"Bearer {org_token}"},
+        json={
+            "name": "Override Cup",
+            "event_type": "round_robin",
+            "min_ntrp": "3.0",
+            "max_ntrp": "4.0",
+            "max_participants": 6,
+            "games_per_set": 6,
+            "num_sets": 3,
+            "registration_deadline": _future_deadline(),
+        },
+    )
+    event_id = resp.json()["id"]
+    await client.post(f"/api/v1/events/{event_id}/publish", headers={"Authorization": f"Bearer {org_token}"})
+
+    player_tokens = []
+    for i in range(3):
+        tk, pid = await _register_and_get_token(client, f"ov_p{i}", ntrp="3.5")
+        player_tokens.append((tk, pid))
+        await client.post(f"/api/v1/events/{event_id}/join", headers={"Authorization": f"Bearer {tk}"})
+
+    await client.post(f"/api/v1/events/{event_id}/start", headers={"Authorization": f"Bearer {org_token}"})
+
+    resp = await client.get(f"/api/v1/events/{event_id}/matches", headers={"Authorization": f"Bearer {org_token}"})
+    match = resp.json()[0]
+    match_id = match["id"]
+
+    # Organizer directly sets score (no confirmation needed)
+    resp = await client.patch(
+        f"/api/v1/events/matches/{match_id}/score",
+        headers={"Authorization": f"Bearer {org_token}"},
+        json={"sets": [{"set_number": 1, "score_a": 6, "score_b": 2}, {"set_number": 2, "score_a": 6, "score_b": 1}]},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "confirmed"
+
+
+@pytest.mark.asyncio
+async def test_get_bracket(client: AsyncClient, session: AsyncSession):
+    """Get elimination bracket as tree structure."""
+    org_token, _ = await _register_and_get_token(client, "br_org", ntrp="4.0")
+
+    resp = await client.post(
+        "/api/v1/events",
+        headers={"Authorization": f"Bearer {org_token}"},
+        json={
+            "name": "Bracket Cup",
+            "event_type": "singles_elimination",
+            "min_ntrp": "3.0",
+            "max_ntrp": "4.5",
+            "max_participants": 8,
+            "registration_deadline": _future_deadline(),
+        },
+    )
+    event_id = resp.json()["id"]
+    await client.post(f"/api/v1/events/{event_id}/publish", headers={"Authorization": f"Bearer {org_token}"})
+
+    for i in range(4):
+        tk, _ = await _register_and_get_token(client, f"br_p{i}", ntrp="3.5")
+        await client.post(f"/api/v1/events/{event_id}/join", headers={"Authorization": f"Bearer {tk}"})
+
+    await client.post(f"/api/v1/events/{event_id}/start", headers={"Authorization": f"Bearer {org_token}"})
+
+    resp = await client.get(
+        f"/api/v1/events/{event_id}/bracket",
+        headers={"Authorization": f"Bearer {org_token}"},
+    )
+    assert resp.status_code == 200
+    bracket = resp.json()
+    assert "rounds" in bracket
+    assert len(bracket["rounds"]) >= 2  # At least 2 rounds for 4 players
+
+
+@pytest.mark.asyncio
+async def test_get_standings(client: AsyncClient, session: AsyncSession):
+    """Get round-robin standings."""
+    org_token, _ = await _register_and_get_token(client, "st_org", ntrp="3.5")
+
+    resp = await client.post(
+        "/api/v1/events",
+        headers={"Authorization": f"Bearer {org_token}"},
+        json={
+            "name": "Standings Cup",
+            "event_type": "round_robin",
+            "min_ntrp": "3.0",
+            "max_ntrp": "4.0",
+            "max_participants": 6,
+            "registration_deadline": _future_deadline(),
+        },
+    )
+    event_id = resp.json()["id"]
+    await client.post(f"/api/v1/events/{event_id}/publish", headers={"Authorization": f"Bearer {org_token}"})
+
+    for i in range(3):
+        tk, _ = await _register_and_get_token(client, f"st_p{i}", ntrp="3.5")
+        await client.post(f"/api/v1/events/{event_id}/join", headers={"Authorization": f"Bearer {tk}"})
+
+    await client.post(f"/api/v1/events/{event_id}/start", headers={"Authorization": f"Bearer {org_token}"})
+
+    resp = await client.get(
+        f"/api/v1/events/{event_id}/standings",
+        headers={"Authorization": f"Bearer {org_token}"},
+    )
+    assert resp.status_code == 200
+    standings = resp.json()
+    assert len(standings) == 3  # 3 players in 1 group
+    assert all("wins" in s and "losses" in s and "points" in s for s in standings)
+
+
+@pytest.mark.asyncio
+async def test_cancel_event(client: AsyncClient, session: AsyncSession):
+    org_token, _ = await _register_and_get_token(client, "can_org")
+
+    resp = await client.post(
+        "/api/v1/events",
+        headers={"Authorization": f"Bearer {org_token}"},
+        json={
+            "name": "Cancel Cup",
+            "event_type": "singles_elimination",
+            "min_ntrp": "3.0",
+            "max_ntrp": "4.0",
+            "max_participants": 8,
+            "registration_deadline": _future_deadline(),
+        },
+    )
+    event_id = resp.json()["id"]
+    await client.post(f"/api/v1/events/{event_id}/publish", headers={"Authorization": f"Bearer {org_token}"})
+
+    # Join a player
+    player_token, _ = await _register_and_get_token(client, "can_p1", ntrp="3.5")
+    await client.post(f"/api/v1/events/{event_id}/join", headers={"Authorization": f"Bearer {player_token}"})
+
+    resp = await client.post(
+        f"/api/v1/events/{event_id}/cancel",
+        headers={"Authorization": f"Bearer {org_token}"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "cancelled"
