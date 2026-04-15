@@ -409,3 +409,172 @@ async def test_cancel_booking_no_free_cancel(client: AsyncClient, session: Async
     assert cancel_resp.json()["status"] == "cancelled"
     # First cancel is always warning-only, so credit should still be the same,
     # but cancel_count should have incremented (verified by subsequent cancel behavior)
+
+
+# ── check_free_cancel unit tests ────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_check_free_cancel_returns_true():
+    """check_free_cancel returns True when get_weather reports allows_free_cancel."""
+    from app.services.weather import check_free_cancel
+    from app.schemas.weather import WeatherResponse
+
+    court_uuid = uuid.uuid4()
+    mock_result = WeatherResponse(
+        court_id=court_uuid,
+        date=date.today() + timedelta(days=3),
+        start_time=time(10, 0),
+        temperature=25,
+        feels_like=25,
+        humidity=70,
+        rain_probability=85,
+        wind_speed_kph=10.0,
+        uv_index=3,
+        condition="rainy",
+        condition_icon="rainy",
+        alerts=[],
+        allows_free_cancel=True,
+    )
+
+    with patch("app.services.weather.get_weather", new_callable=AsyncMock) as mock_get:
+        mock_get.return_value = mock_result
+        result = await check_free_cancel(
+            lat=22.28,
+            lon=114.17,
+            play_date=date.today() + timedelta(days=3),
+            start_time=time(10, 0),
+            court_id=court_uuid,
+        )
+
+    assert result is True
+
+
+@pytest.mark.asyncio
+async def test_check_free_cancel_returns_false_no_alerts():
+    """check_free_cancel returns False when weather is normal (no severe conditions)."""
+    from app.services.weather import check_free_cancel
+    from app.schemas.weather import WeatherResponse
+
+    court_uuid = uuid.uuid4()
+    mock_result = WeatherResponse(
+        court_id=court_uuid,
+        date=date.today() + timedelta(days=3),
+        start_time=time(10, 0),
+        temperature=25,
+        feels_like=25,
+        humidity=60,
+        rain_probability=20,
+        wind_speed_kph=8.0,
+        uv_index=3,
+        condition="sunny",
+        condition_icon="sunny",
+        alerts=[],
+        allows_free_cancel=False,
+    )
+
+    with patch("app.services.weather.get_weather", new_callable=AsyncMock) as mock_get:
+        mock_get.return_value = mock_result
+        result = await check_free_cancel(
+            lat=22.28,
+            lon=114.17,
+            play_date=date.today() + timedelta(days=3),
+            start_time=time(10, 0),
+            court_id=court_uuid,
+        )
+
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_check_free_cancel_returns_false_when_weather_unavailable():
+    """check_free_cancel returns False when get_weather returns None (API failure)."""
+    from app.services.weather import check_free_cancel
+
+    with patch("app.services.weather.get_weather", new_callable=AsyncMock) as mock_get:
+        mock_get.return_value = None
+        result = await check_free_cancel(
+            lat=22.28,
+            lon=114.17,
+            play_date=date.today() + timedelta(days=3),
+            start_time=time(10, 0),
+            court_id=1,
+        )
+
+    assert result is False
+
+
+# ── Cache hit path test ──────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_get_weather_cache_hit_skips_fetch():
+    """When Redis returns cached data, _fetch_qweather should never be called."""
+    from app.services.weather import get_weather
+    from app.schemas.weather import WeatherResponse
+
+    court_uuid = uuid.uuid4()
+    cached_response = WeatherResponse(
+        court_id=court_uuid,
+        date=date.today() + timedelta(days=3),
+        start_time=None,
+        temperature=28,
+        feels_like=28,
+        humidity=65,
+        rain_probability=10,
+        wind_speed_kph=5.0,
+        uv_index=4,
+        condition="cloudy",
+        condition_icon="cloudy",
+        alerts=[],
+        allows_free_cancel=False,
+    )
+    cached_json = cached_response.model_dump_json()
+
+    mock_redis = AsyncMock()
+    mock_redis.get = AsyncMock(return_value=cached_json)
+    mock_redis.set = AsyncMock(return_value=True)
+
+    with (
+        patch("app.services.weather.redis_client", mock_redis),
+        patch("app.services.weather._fetch_qweather") as mock_fetch,
+    ):
+        result = await get_weather(
+            lat=22.28,
+            lon=114.17,
+            query_date=date.today() + timedelta(days=3),
+            query_time=None,
+            court_id=court_uuid,
+        )
+
+    mock_fetch.assert_not_called()
+    assert result is not None
+    assert result.temperature == 28
+    assert result.allows_free_cancel is False
+
+
+# ── Chinese typhoon alert variants ──────────────────────────────────────
+
+
+def test_compute_alerts_traditional_chinese_typhoon():
+    """_compute_alerts handles Traditional Chinese typhoon warning text '颱風'."""
+    from app.services.weather import _compute_alerts
+
+    alerts, free_cancel = _compute_alerts(
+        temperature=25, rain_probability=20, uv_index=3,
+        warnings=[{"title": "颱風信號八號"}], lang="zh-Hant",
+    )
+    assert free_cancel is True
+    assert any(a.type == "typhoon" for a in alerts)
+
+
+def test_compute_alerts_simplified_chinese_typhoon():
+    """_compute_alerts handles Simplified Chinese typhoon warning text '台风'."""
+    from app.services.weather import _compute_alerts
+
+    alerts, free_cancel = _compute_alerts(
+        temperature=25, rain_probability=20, uv_index=3,
+        warnings=[{"title": "台风橙色预警"}], lang="zh-Hans",
+    )
+    assert free_cancel is True
+    assert any(a.type == "typhoon" for a in alerts)
