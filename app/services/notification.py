@@ -1,9 +1,11 @@
 import uuid
 
+from redis.asyncio import Redis
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.notification import Notification, NotificationType
+from app.services.push import enqueue_push
 
 
 async def create_notification(
@@ -14,6 +16,8 @@ async def create_notification(
     actor_id: uuid.UUID | None = None,
     target_type: str | None = None,
     target_id: uuid.UUID | None = None,
+    redis: Redis | None = None,
+    ws_manager=None,
 ) -> Notification:
     notification = Notification(
         recipient_id=recipient_id,
@@ -24,6 +28,10 @@ async def create_notification(
     )
     session.add(notification)
     await session.flush()
+
+    if redis is not None:
+        await enqueue_push(redis, notification, ws_manager=ws_manager)
+
     return notification
 
 

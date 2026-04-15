@@ -266,3 +266,64 @@ async def test_process_push_job_removes_stale_tokens(monkeypatch):
         await process_push_job(mock_session_factory, job_data)
 
     mock_remove.assert_called_once_with(mock_session, uuid.UUID(job_data["recipient_id"]), ["stale-token"])
+
+
+from app.services.notification import create_notification
+from app.models.notification import NotificationType
+
+
+@pytest.mark.asyncio
+async def test_create_notification_enqueues_push_for_pushable_type(session):
+    from app.models.user import User, Gender
+
+    user = User(nickname="push_int", gender=Gender.MALE, city="Taipei", ntrp_level="3.5", ntrp_label="3.5")
+    session.add(user)
+    await session.flush()
+
+    mock_redis = AsyncMock()
+    notification = await create_notification(
+        session,
+        recipient_id=user.id,
+        type=NotificationType.BOOKING_CONFIRMED,
+        target_type="booking",
+        target_id=uuid.uuid4(),
+        redis=mock_redis,
+    )
+    mock_redis.lpush.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_create_notification_skips_push_for_non_pushable(session):
+    from app.models.user import User, Gender
+
+    user = User(nickname="push_skip", gender=Gender.MALE, city="Taipei", ntrp_level="3.5", ntrp_label="3.5")
+    session.add(user)
+    await session.flush()
+
+    mock_redis = AsyncMock()
+    notification = await create_notification(
+        session,
+        recipient_id=user.id,
+        type=NotificationType.NEW_FOLLOWER,
+        redis=mock_redis,
+    )
+    mock_redis.lpush.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_create_notification_works_without_redis(session):
+    """Backward compatibility: create_notification still works without redis param."""
+    from app.models.user import User, Gender
+
+    user = User(nickname="push_compat", gender=Gender.MALE, city="Taipei", ntrp_level="3.5", ntrp_label="3.5")
+    session.add(user)
+    await session.flush()
+
+    notification = await create_notification(
+        session,
+        recipient_id=user.id,
+        type=NotificationType.BOOKING_CONFIRMED,
+        target_type="booking",
+        target_id=uuid.uuid4(),
+    )
+    assert notification.id is not None
