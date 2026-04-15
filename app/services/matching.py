@@ -13,11 +13,15 @@ from app.models.matching import (
     GenderPreference,
     MatchPreference,
     MatchPreferenceCourt,
+    MatchProposal,
     MatchTimeSlot,
     MatchTypePreference,
+    ProposalStatus,
 )
+from app.models.notification import Notification, NotificationType
 from app.models.user import Gender, User
 from app.services.booking import _ntrp_to_float
+from app.services.notification import create_notification
 
 
 async def create_preference(
@@ -64,7 +68,12 @@ async def create_preference(
         session.add(pc)
 
     await session.commit()
-    return await get_preference_by_user(session, user_id)
+    pref = await get_preference_by_user(session, user_id)
+    # Trigger passive matching
+    user = await session.get(User, user_id)
+    await trigger_passive_matching(session, user, pref)
+    await session.commit()
+    return pref
 
 
 async def get_preference_by_user(
@@ -128,7 +137,11 @@ async def update_preference(
 
     await session.commit()
     session.expire(pref)
-    return await get_preference_by_user(session, user_id)
+    pref = await get_preference_by_user(session, user_id)
+    user = await session.get(User, user_id)
+    await trigger_passive_matching(session, user, pref)
+    await session.commit()
+    return pref
 
 
 async def toggle_preference(
@@ -142,7 +155,12 @@ async def toggle_preference(
     if pref.is_active:
         pref.last_active_at = datetime.now(timezone.utc)
     await session.commit()
-    return await get_preference_by_user(session, user_id)
+    pref = await get_preference_by_user(session, user_id)
+    if pref.is_active:
+        user = await session.get(User, user_id)
+        await trigger_passive_matching(session, user, pref)
+        await session.commit()
+    return pref
 
 
 # --- Scoring ---
@@ -477,3 +495,72 @@ async def search_booking_recommendations(
 
     scored.sort(key=lambda x: x["score"], reverse=True)
     return scored[:limit]
+
+
+# --- Passive Matching ---
+
+SUGGESTION_SCORE_THRESHOLD = 60
+SUGGESTION_MAX_PER_EVENT = 3
+SUGGESTION_COOLDOWN_DAYS = 7
+
+
+async def trigger_passive_matching(
+    session: AsyncSession, user: User, pref: MatchPreference
+) -> None:
+    """Find top matches and send MATCH_SUGGESTION notifications."""
+    candidates = await search_candidates(session, user, pref, limit=SUGGESTION_MAX_PER_EVENT)
+
+    cooldown_cutoff = datetime.now(timezone.utc) - timedelta(days=SUGGESTION_COOLDOWN_DAYS)
+
+    for candidate in candidates:
+        if candidate["score"] < SUGGESTION_SCORE_THRESHOLD:
+            continue
+
+        candidate_id = uuid.UUID(candidate["user_id"])
+
+        # Check cooldown: don't re-suggest if notification sent within 7 days
+        existing = await session.execute(
+            select(Notification.id).where(
+                Notification.type == NotificationType.MATCH_SUGGESTION,
+                Notification.recipient_id == candidate_id,
+                Notification.actor_id == user.id,
+                Notification.created_at >= cooldown_cutoff,
+            )
+        )
+        if existing.scalar_one_or_none() is not None:
+            continue
+
+        # Check no pending/rejected proposal between them
+        existing_proposal = await session.execute(
+            select(MatchProposal.id).where(
+                MatchProposal.status.in_([ProposalStatus.PENDING, ProposalStatus.REJECTED]),
+                (
+                    (MatchProposal.proposer_id == user.id) & (MatchProposal.target_id == candidate_id)
+                    | (MatchProposal.proposer_id == candidate_id) & (MatchProposal.target_id == user.id)
+                ),
+            )
+        )
+        if existing_proposal.scalar_one_or_none() is not None:
+            continue
+
+        # Notify the candidate about the current user
+        await create_notification(
+            session,
+            recipient_id=candidate_id,
+            type=NotificationType.MATCH_SUGGESTION,
+            actor_id=user.id,
+            target_type="match_preference",
+            target_id=pref.id,
+        )
+
+        # Also notify the current user about the candidate
+        await create_notification(
+            session,
+            recipient_id=user.id,
+            type=NotificationType.MATCH_SUGGESTION,
+            actor_id=candidate_id,
+            target_type="match_preference",
+            target_id=pref.id,
+        )
+
+    await session.flush()

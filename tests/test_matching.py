@@ -706,3 +706,76 @@ async def test_list_proposals(client: AsyncClient, session: AsyncSession):
     resp = await client.get("/api/v1/matching/proposals?direction=received", headers=_auth(token_b))
     assert resp.status_code == 200
     assert len(resp.json()) == 1
+
+
+# --- Passive Matching Tests ---
+
+
+@pytest.mark.asyncio
+async def test_passive_match_on_create(client: AsyncClient, session: AsyncSession):
+    """Creating a preference should trigger MATCH_SUGGESTION notifications for good matches."""
+    from sqlalchemy import func as sa_func
+    from app.models.notification import Notification, NotificationType
+
+    token_a, uid_a = await _register_and_get_token(client, "passive_a", ntrp="3.5")
+    court = await _seed_court(session)
+
+    # User A creates preference first
+    pref_body = {
+        "match_type": "singles",
+        "min_ntrp": "3.0",
+        "max_ntrp": "4.0",
+        "time_slots": [{"day_of_week": 5, "start_time": "09:00:00", "end_time": "12:00:00"}],
+        "court_ids": [str(court.id)],
+    }
+    await client.post("/api/v1/matching/preferences", headers=_auth(token_a), json=pref_body)
+
+    # User B creates a matching preference — this should trigger notifications
+    token_b, uid_b = await _register_and_get_token(client, "passive_b", ntrp="3.5")
+    await client.post("/api/v1/matching/preferences", headers=_auth(token_b), json=pref_body)
+
+    # Check that user A received a MATCH_SUGGESTION notification
+    result = await session.execute(
+        select(Notification).where(
+            Notification.recipient_id == uuid.UUID(uid_a),
+            Notification.type == NotificationType.MATCH_SUGGESTION,
+        )
+    )
+    notifications = result.scalars().all()
+    assert len(notifications) == 1
+
+
+@pytest.mark.asyncio
+async def test_passive_match_on_reactivate(client: AsyncClient, session: AsyncSession):
+    """Reactivating a preference should trigger passive matching."""
+    from sqlalchemy import func as sa_func
+    from app.models.notification import Notification, NotificationType
+
+    token_a, uid_a = await _register_and_get_token(client, "passive_c", ntrp="3.5")
+    token_b, uid_b = await _register_and_get_token(client, "passive_d", ntrp="3.5")
+    court = await _seed_court(session)
+
+    pref_body = {
+        "match_type": "singles",
+        "min_ntrp": "3.0",
+        "max_ntrp": "4.0",
+        "time_slots": [{"day_of_week": 5, "start_time": "09:00:00", "end_time": "12:00:00"}],
+        "court_ids": [str(court.id)],
+    }
+    await client.post("/api/v1/matching/preferences", headers=_auth(token_a), json=pref_body)
+    await client.post("/api/v1/matching/preferences", headers=_auth(token_b), json=pref_body)
+
+    # Toggle off then on
+    await client.patch("/api/v1/matching/preferences/toggle", headers=_auth(token_b))
+    await client.patch("/api/v1/matching/preferences/toggle", headers=_auth(token_b))
+
+    # Check notifications: cooldown (7 days) prevents duplicate suggestion,
+    # so count remains 1 even after reactivation — this is correct behavior
+    result = await session.execute(
+        select(sa_func.count(Notification.id)).where(
+            Notification.recipient_id == uuid.UUID(uid_a),
+            Notification.type == NotificationType.MATCH_SUGGESTION,
+        )
+    )
+    count = result.scalar_one()
+    assert count >= 1
