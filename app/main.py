@@ -14,7 +14,7 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     app = FastAPI(title="Let's Tennis", version="0.1.0", lifespan=lifespan)
 
-    from app.routers import auth, assistant, blocks, bookings, courts, follows, notifications, reports, reviews, users
+    from app.routers import auth, assistant, blocks, bookings, courts, follows, matching, notifications, reports, reviews, users
 
     app.include_router(auth.router, prefix="/api/v1/auth", tags=["auth"])
     app.include_router(assistant.router, prefix="/api/v1/assistant", tags=["assistant"])
@@ -25,6 +25,7 @@ def create_app() -> FastAPI:
     app.include_router(blocks.router, prefix="/api/v1/blocks", tags=["blocks"])
     app.include_router(follows.router, prefix="/api/v1/follows", tags=["follows"])
     app.include_router(notifications.router, prefix="/api/v1/notifications", tags=["notifications"])
+    app.include_router(matching.router, prefix="/api/v1/matching", tags=["matching"])
     app.include_router(reports.router, prefix="/api/v1/reports", tags=["reports"])
     app.include_router(reports.admin_router, prefix="/api/v1/admin/reports", tags=["admin"])
 
