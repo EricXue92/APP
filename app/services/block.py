@@ -35,6 +35,10 @@ async def create_block(
     from app.services.follow import remove_follows_between  # deferred to avoid circular import
     await remove_follows_between(session, blocker_id, blocked_id)
 
+    # Expire pending proposals between the two users
+    from app.services.match_proposal import expire_proposals_on_block
+    await expire_proposals_on_block(session, blocker_id, blocked_id)
+
     block = Block(blocker_id=blocker_id, blocked_id=blocked_id)
     session.add(block)
 

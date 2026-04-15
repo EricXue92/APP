@@ -779,3 +779,39 @@ async def test_passive_match_on_reactivate(client: AsyncClient, session: AsyncSe
     )
     count = result.scalar_one()
     assert count >= 1
+
+
+# --- Block Integration Tests ---
+
+
+@pytest.mark.asyncio
+async def test_block_expires_pending_proposals(client: AsyncClient, session: AsyncSession):
+    """Blocking a user should expire pending proposals between them."""
+    from app.models.matching import MatchProposal
+
+    token_a, uid_a = await _register_and_get_token(client, "blk_prop_a")
+    token_b, uid_b = await _register_and_get_token(client, "blk_prop_b")
+    court = await _seed_court(session)
+
+    resp = await client.post(
+        "/api/v1/matching/proposals",
+        headers=_auth(token_a),
+        json={
+            "target_id": uid_b,
+            "court_id": str(court.id),
+            "play_date": (date.today() + timedelta(days=7)).isoformat(),
+            "start_time": "10:00:00",
+            "end_time": "12:00:00",
+        },
+    )
+    proposal_id = resp.json()["id"]
+
+    # Block user B
+    await client.post("/api/v1/blocks", headers=_auth(token_a), json={"blocked_id": uid_b})
+
+    # Check proposal is now expired
+    result = await session.execute(
+        select(MatchProposal).where(MatchProposal.id == uuid.UUID(proposal_id))
+    )
+    proposal = result.scalar_one()
+    assert proposal.status.value == "expired"
