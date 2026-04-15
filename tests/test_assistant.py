@@ -188,3 +188,87 @@ async def test_parse_booking_malformed_response(session: AsyncSession):
     # All standard fields should be None when LLM returns garbage
     assert result["match_type"] is None
     assert result["court_id"] is None
+
+
+async def _register_and_get_token(client: AsyncClient, username: str) -> tuple[str, str]:
+    resp = await client.post(
+        "/api/v1/auth/register/username",
+        params={
+            "nickname": f"Player_{username}",
+            "gender": "male",
+            "city": "Hong Kong",
+            "ntrp_level": "3.5",
+            "language": "en",
+        },
+        json={"username": username, "password": "pass1234", "email": f"{username}@example.com"},
+    )
+    data = resp.json()
+    return data["access_token"], data["user_id"]
+
+
+@pytest.mark.asyncio
+async def test_api_parse_booking_success(client: AsyncClient, session: AsyncSession):
+    token, _ = await _register_and_get_token(client, "api_user")
+    court = await _seed_test_court(session, "维园网球场API")
+
+    fake = FakeProvider(response={
+        "match_type": "singles",
+        "play_date": "2026-04-19",
+        "start_time": "15:00",
+        "end_time": "17:00",
+        "court_keyword": "维园",
+        "min_ntrp": "3.0",
+        "max_ntrp": "4.0",
+        "gender_requirement": "any",
+        "cost_description": "AA",
+    })
+
+    with patch("app.services.assistant.get_provider", return_value=fake):
+        with patch("app.services.assistant._check_rate_limit", new_callable=AsyncMock):
+            resp = await client.post(
+                "/api/v1/assistant/parse-booking",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"text": "周六下午维园单打 3.5 AA"},
+            )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["match_type"] == "singles"
+    assert data["court_name"] == "维园网球场API"
+
+
+@pytest.mark.asyncio
+async def test_api_parse_booking_no_auth(client: AsyncClient):
+    resp = await client.post(
+        "/api/v1/assistant/parse-booking",
+        json={"text": "play singles"},
+    )
+    assert resp.status_code == 422  # missing Authorization header
+
+
+@pytest.mark.asyncio
+async def test_api_parse_booking_rate_limited(client: AsyncClient, session: AsyncSession):
+    token, _ = await _register_and_get_token(client, "rate_api_user")
+
+    with patch("app.services.assistant.parse_booking", new_callable=AsyncMock, side_effect=RateLimitError("rate limit")):
+        resp = await client.post(
+            "/api/v1/assistant/parse-booking",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"text": "play singles"},
+        )
+
+    assert resp.status_code == 429
+
+
+@pytest.mark.asyncio
+async def test_api_parse_booking_llm_error(client: AsyncClient, session: AsyncSession):
+    token, _ = await _register_and_get_token(client, "err_api_user")
+
+    with patch("app.services.assistant.parse_booking", new_callable=AsyncMock, side_effect=RuntimeError("LLM down")):
+        resp = await client.post(
+            "/api/v1/assistant/parse-booking",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"text": "play singles"},
+        )
+
+    assert resp.status_code == 502
