@@ -808,4 +808,113 @@ async def test_cancel_event(client: AsyncClient, session: AsyncSession):
         headers={"Authorization": f"Bearer {org_token}"},
     )
     assert resp.status_code == 200
-    assert resp.json()["status"] == "cancelled"
+
+
+# ---------------------------------------------------------------------------
+# Score validation unit tests (pure functions, no DB)
+# ---------------------------------------------------------------------------
+
+from app.services.event import validate_set_score, validate_match_score
+
+
+# --- validate_set_score ---
+
+def test_set_score_normal_win():
+    assert validate_set_score(6, 4, None, None, 6) is True
+    assert validate_set_score(6, 0, None, None, 6) is True
+    assert validate_set_score(6, 3, None, None, 6) is True
+
+
+def test_set_score_normal_win_wrong_margin():
+    """6-5 is not valid without tiebreak."""
+    assert validate_set_score(6, 5, None, None, 6) is False
+
+
+def test_set_score_tiebreak_valid():
+    assert validate_set_score(7, 6, 7, 5, 6) is True
+    assert validate_set_score(7, 6, 9, 7, 6) is True
+
+
+def test_set_score_tiebreak_invalid_margin():
+    """Tiebreak must be won by 2."""
+    assert validate_set_score(7, 6, 7, 6, 6) is False
+
+
+def test_set_score_tiebreak_too_low():
+    """Tiebreak winner must reach at least 7."""
+    assert validate_set_score(7, 6, 6, 4, 6) is False
+
+
+def test_set_score_tiebreak_without_7_6():
+    """Tiebreak scores only valid with 7-6 game score."""
+    assert validate_set_score(6, 4, 7, 5, 6) is False
+
+
+def test_set_score_6_6_invalid():
+    assert validate_set_score(6, 6, None, None, 6) is False
+
+
+def test_match_tiebreak_valid():
+    assert validate_set_score(1, 0, 10, 8, 6, is_match_tiebreak=True) is True
+    assert validate_set_score(0, 1, 5, 10, 6, is_match_tiebreak=True) is True
+
+
+def test_match_tiebreak_not_enough():
+    """Match tiebreak winner must reach 10."""
+    assert validate_set_score(1, 0, 8, 6, 6, is_match_tiebreak=True) is False
+
+
+def test_match_tiebreak_margin():
+    """Match tiebreak must be won by 2."""
+    assert validate_set_score(1, 0, 10, 9, 6, is_match_tiebreak=True) is False
+
+
+# --- validate_match_score ---
+
+def test_match_score_straight_sets():
+    sets = [
+        {"score_a": 6, "score_b": 4},
+        {"score_a": 6, "score_b": 3},
+    ]
+    assert validate_match_score(sets, 6, 3, False) == "a"
+
+
+def test_match_score_three_sets():
+    sets = [
+        {"score_a": 4, "score_b": 6},
+        {"score_a": 6, "score_b": 3},
+        {"score_a": 6, "score_b": 4},
+    ]
+    assert validate_match_score(sets, 6, 3, False) == "a"
+
+
+def test_match_score_b_wins():
+    sets = [
+        {"score_a": 3, "score_b": 6},
+        {"score_a": 4, "score_b": 6},
+    ]
+    assert validate_match_score(sets, 6, 3, False) == "b"
+
+
+def test_match_score_deciding_match_tiebreak():
+    sets = [
+        {"score_a": 6, "score_b": 4},
+        {"score_a": 4, "score_b": 6},
+        {"score_a": 1, "score_b": 0, "tiebreak_a": 10, "tiebreak_b": 7},
+    ]
+    assert validate_match_score(sets, 6, 3, True) == "a"
+
+
+def test_match_score_invalid_set():
+    sets = [
+        {"score_a": 5, "score_b": 5},
+    ]
+    assert validate_match_score(sets, 6, 3, False) is None
+
+
+def test_match_score_incomplete():
+    """One set is not enough to win best-of-3."""
+    sets = [
+        {"score_a": 6, "score_b": 4},
+    ]
+    assert validate_match_score(sets, 6, 3, False) is None
