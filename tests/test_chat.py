@@ -166,3 +166,112 @@ async def test_add_remove_participant(session: AsyncSession):
     await remove_participant(session, room_id=room.id, user_id=user3.id)
     room = await get_room_by_id(session, room.id)
     assert len(room.participants) == 2
+
+
+from app.services.chat import send_message, get_messages, mark_room_read, get_unread_count
+
+
+@pytest.mark.asyncio
+async def test_send_message(session: AsyncSession):
+    user1 = await _create_user(session, "Alice")
+    user2 = await _create_user(session, "Bob")
+    court = await _create_court(session)
+    booking = await _create_confirmed_booking(session, user1, user2, court)
+    room = await create_chat_room(session, booking=booking, participant_ids=[user1.id, user2.id], court_name=court.name)
+
+    msg = await send_message(session, room_id=room.id, sender_id=user1.id, type="text", content="Hello!")
+    assert msg.content == "Hello!"
+    assert msg.sender_id == user1.id
+    assert msg.room_id == room.id
+
+
+@pytest.mark.asyncio
+async def test_send_message_blocked_word(session: AsyncSession):
+    user1 = await _create_user(session, "Alice")
+    user2 = await _create_user(session, "Bob")
+    court = await _create_court(session)
+    booking = await _create_confirmed_booking(session, user1, user2, court)
+    room = await create_chat_room(session, booking=booking, participant_ids=[user1.id, user2.id], court_name=court.name)
+
+    with pytest.raises(ValueError, match="blocked"):
+        await send_message(session, room_id=room.id, sender_id=user1.id, type="text", content="你是傻逼")
+
+
+@pytest.mark.asyncio
+async def test_send_message_readonly_room(session: AsyncSession):
+    user1 = await _create_user(session, "Alice")
+    user2 = await _create_user(session, "Bob")
+    court = await _create_court(session)
+    booking = await _create_confirmed_booking(session, user1, user2, court)
+    room = await create_chat_room(session, booking=booking, participant_ids=[user1.id, user2.id], court_name=court.name)
+
+    await set_room_readonly(session, booking_id=booking.id)
+    with pytest.raises(ValueError, match="read-only"):
+        await send_message(session, room_id=room.id, sender_id=user1.id, type="text", content="Hi")
+
+
+@pytest.mark.asyncio
+async def test_send_message_not_participant(session: AsyncSession):
+    user1 = await _create_user(session, "Alice")
+    user2 = await _create_user(session, "Bob")
+    user3 = await _create_user(session, "Carol")
+    court = await _create_court(session)
+    booking = await _create_confirmed_booking(session, user1, user2, court)
+    room = await create_chat_room(session, booking=booking, participant_ids=[user1.id, user2.id], court_name=court.name)
+
+    with pytest.raises(PermissionError):
+        await send_message(session, room_id=room.id, sender_id=user3.id, type="text", content="Hi")
+
+
+@pytest.mark.asyncio
+async def test_get_messages_pagination(session: AsyncSession):
+    user1 = await _create_user(session, "Alice")
+    user2 = await _create_user(session, "Bob")
+    court = await _create_court(session)
+    booking = await _create_confirmed_booking(session, user1, user2, court)
+    room = await create_chat_room(session, booking=booking, participant_ids=[user1.id, user2.id], court_name=court.name)
+
+    for i in range(5):
+        await send_message(session, room_id=room.id, sender_id=user1.id, type="text", content=f"msg {i}")
+
+    messages = await get_messages(session, room_id=room.id, limit=3)
+    assert len(messages) == 3
+    # Most recent first
+    assert messages[0].content == "msg 4"
+
+    # Cursor pagination: get messages before the oldest in first page
+    older = await get_messages(session, room_id=room.id, before_id=messages[-1].id, limit=3)
+    assert len(older) == 2
+    assert older[0].content == "msg 1"
+
+
+@pytest.mark.asyncio
+async def test_unread_count_and_mark_read(session: AsyncSession):
+    user1 = await _create_user(session, "Alice")
+    user2 = await _create_user(session, "Bob")
+    court = await _create_court(session)
+    booking = await _create_confirmed_booking(session, user1, user2, court)
+    room = await create_chat_room(session, booking=booking, participant_ids=[user1.id, user2.id], court_name=court.name)
+
+    await send_message(session, room_id=room.id, sender_id=user1.id, type="text", content="Hello")
+    await send_message(session, room_id=room.id, sender_id=user1.id, type="text", content="World")
+
+    count = await get_unread_count(session, room_id=room.id, user_id=user2.id)
+    assert count == 2
+
+    await mark_room_read(session, room_id=room.id, user_id=user2.id)
+    count = await get_unread_count(session, room_id=room.id, user_id=user2.id)
+    assert count == 0
+
+
+@pytest.mark.asyncio
+async def test_image_message_skips_word_filter(session: AsyncSession):
+    user1 = await _create_user(session, "Alice")
+    user2 = await _create_user(session, "Bob")
+    court = await _create_court(session)
+    booking = await _create_confirmed_booking(session, user1, user2, court)
+    room = await create_chat_room(session, booking=booking, participant_ids=[user1.id, user2.id], court_name=court.name)
+
+    # Image content containing blocked word in URL should NOT be filtered
+    msg = await send_message(session, room_id=room.id, sender_id=user1.id, type="image", content="https://example.com/傻逼.jpg")
+    assert msg.type.value == "image"

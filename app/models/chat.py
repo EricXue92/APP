@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Index, Text, String, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Index, Text, String, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -67,7 +67,7 @@ class Message(Base):
     type: Mapped[MessageType] = mapped_column(Enum(MessageType))
     content: Mapped[str] = mapped_column(Text)
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("clock_timestamp()"))
 
     room: Mapped["ChatRoom"] = relationship(back_populates="messages", foreign_keys=[room_id])
     sender: Mapped["User | None"] = relationship(foreign_keys=[sender_id])

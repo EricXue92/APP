@@ -1,11 +1,12 @@
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func as sa_func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models.booking import Booking, MatchType
 from app.models.chat import ChatParticipant, ChatRoom, Message, MessageType, RoomType
+from app.services.word_filter import contains_blocked_word
 
 
 async def create_chat_room(
@@ -102,3 +103,108 @@ async def remove_participant(session: AsyncSession, *, room_id: uuid.UUID, user_
     if participant:
         await session.delete(participant)
         await session.flush()
+
+
+async def send_message(
+    session: AsyncSession,
+    *,
+    room_id: uuid.UUID,
+    sender_id: uuid.UUID,
+    type: str,
+    content: str,
+) -> Message:
+    room = await get_room_by_id(session, room_id)
+    if room is None:
+        raise LookupError("Room not found")
+
+    if room.is_readonly:
+        raise ValueError("Room is read-only")
+
+    # Check sender is a participant
+    is_participant = any(p.user_id == sender_id for p in room.participants)
+    if not is_participant:
+        raise PermissionError("Not a participant")
+
+    # Word filter for text messages only
+    msg_type = MessageType(type)
+    if msg_type == MessageType.TEXT and contains_blocked_word(content):
+        raise ValueError("Message contains blocked content")
+
+    message = Message(
+        room_id=room_id,
+        sender_id=sender_id,
+        type=msg_type,
+        content=content,
+    )
+    session.add(message)
+    await session.flush()
+    await session.refresh(message)
+    return message
+
+
+async def get_messages(
+    session: AsyncSession,
+    *,
+    room_id: uuid.UUID,
+    before_id: uuid.UUID | None = None,
+    limit: int = 20,
+) -> list[Message]:
+    query = (
+        select(Message)
+        .options(selectinload(Message.sender))
+        .where(Message.room_id == room_id)
+    )
+    if before_id:
+        # Get the created_at of the cursor message
+        cursor_result = await session.execute(
+            select(Message.created_at).where(Message.id == before_id)
+        )
+        cursor_time = cursor_result.scalar_one_or_none()
+        if cursor_time:
+            query = query.where(Message.created_at < cursor_time)
+
+    query = query.order_by(Message.created_at.desc()).limit(limit)
+    result = await session.execute(query)
+    return list(result.scalars().all())
+
+
+async def get_unread_count(
+    session: AsyncSession,
+    *,
+    room_id: uuid.UUID,
+    user_id: uuid.UUID,
+) -> int:
+    # Get the user's last_read_at for this room
+    result = await session.execute(
+        select(ChatParticipant.last_read_at).where(
+            ChatParticipant.room_id == room_id,
+            ChatParticipant.user_id == user_id,
+        )
+    )
+    last_read = result.scalar_one_or_none()
+
+    count_query = select(sa_func.count(Message.id)).where(Message.room_id == room_id)
+    if last_read is not None:
+        count_query = count_query.where(Message.created_at > last_read)
+
+    result = await session.execute(count_query)
+    return result.scalar_one()
+
+
+async def mark_room_read(
+    session: AsyncSession,
+    *,
+    room_id: uuid.UUID,
+    user_id: uuid.UUID,
+) -> None:
+    result = await session.execute(
+        select(ChatParticipant).where(
+            ChatParticipant.room_id == room_id,
+            ChatParticipant.user_id == user_id,
+        )
+    )
+    participant = result.scalar_one_or_none()
+    if participant is None:
+        raise LookupError("Not a participant")
+    participant.last_read_at = text("clock_timestamp()")
+    await session.flush()
