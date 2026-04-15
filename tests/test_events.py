@@ -364,3 +364,49 @@ async def test_start_event_not_enough_participants(client: AsyncClient, session:
         headers={"Authorization": f"Bearer {org_token}"},
     )
     assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_start_round_robin_event(client: AsyncClient, session: AsyncSession):
+    """Start a round-robin event with 6 players — should create groups and matches."""
+    org_token, _ = await _register_and_get_token(client, "rr_org", ntrp="3.5")
+
+    resp = await client.post(
+        "/api/v1/events",
+        headers={"Authorization": f"Bearer {org_token}"},
+        json={
+            "name": "RR Cup",
+            "event_type": "round_robin",
+            "min_ntrp": "3.0",
+            "max_ntrp": "4.0",
+            "max_participants": 8,
+            "registration_deadline": _future_deadline(),
+        },
+    )
+    event_id = resp.json()["id"]
+    await client.post(f"/api/v1/events/{event_id}/publish", headers={"Authorization": f"Bearer {org_token}"})
+
+    for i in range(6):
+        tk, _ = await _register_and_get_token(client, f"rr_p{i}", ntrp="3.5")
+        await client.post(f"/api/v1/events/{event_id}/join", headers={"Authorization": f"Bearer {tk}"})
+
+    resp = await client.post(
+        f"/api/v1/events/{event_id}/start",
+        headers={"Authorization": f"Bearer {org_token}"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "in_progress"
+
+    resp = await client.get(
+        f"/api/v1/events/{event_id}/matches",
+        headers={"Authorization": f"Bearer {org_token}"},
+    )
+    matches = resp.json()
+
+    # 6 players → 2 groups of 3 → each group has C(3,2) = 3 matches → 6 total
+    assert len(matches) == 6
+
+    groups = set(m["group_name"] for m in matches)
+    assert len(groups) == 2
+    assert "A" in groups
+    assert "B" in groups

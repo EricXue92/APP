@@ -341,8 +341,71 @@ def _generate_elimination_draw(
 
 
 def _generate_round_robin_draw(seeded: list[EventParticipant]) -> list[dict]:
-    """Placeholder — implemented in Task 10."""
-    raise NotImplementedError("Round-robin draw not yet implemented")
+    """Generate round-robin matches with snake-draft grouping."""
+    n = len(seeded)
+    if n <= 4:
+        num_groups = 1
+    else:
+        num_groups = max(2, n // 4)
+
+    # Snake-draft into groups
+    groups: dict[str, list[EventParticipant]] = {}
+    group_labels = [chr(ord("A") + i) for i in range(num_groups)]
+    for label in group_labels:
+        groups[label] = []
+
+    for i, p in enumerate(seeded):
+        cycle = i // num_groups
+        idx = i % num_groups
+        if cycle % 2 == 1:
+            idx = num_groups - 1 - idx
+        label = group_labels[idx]
+        groups[label].append(p)
+        p.group_name = label
+
+    matches = []
+    for label, members in groups.items():
+        group_matches = _round_robin_schedule(members, label)
+        matches.extend(group_matches)
+
+    return matches
+
+
+def _round_robin_schedule(members: list[EventParticipant], group_name: str) -> list[dict]:
+    """Generate all-play-all matches using circle method."""
+    n = len(members)
+    if n < 2:
+        return []
+
+    players = list(members)
+    if n % 2 == 1:
+        players.append(None)  # Dummy for bye
+
+    num_rounds = len(players) - 1
+    matches = []
+    match_order = 1
+
+    for round_num in range(1, num_rounds + 1):
+        for i in range(len(players) // 2):
+            a = players[i]
+            b = players[len(players) - 1 - i]
+            if a is None or b is None:
+                continue
+            matches.append({
+                "round": round_num,
+                "match_order": match_order,
+                "player_a_id": a.user_id,
+                "player_b_id": b.user_id,
+                "winner_id": None,
+                "group_name": group_name,
+                "status": EventMatchStatus.PENDING,
+            })
+            match_order += 1
+
+        # Rotate: fix first player, rotate rest
+        players = [players[0]] + [players[-1]] + players[1:-1]
+
+    return matches
 
 
 async def start_event(
