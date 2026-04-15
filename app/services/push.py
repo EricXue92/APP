@@ -7,10 +7,15 @@ import uuid
 import firebase_admin
 from firebase_admin import credentials, messaging
 from redis.asyncio import Redis
+from sqlalchemy import select as sa_select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import settings
 from app.i18n import t
+from app.models.device_token import DeviceToken
 from app.models.notification import Notification, NotificationType
+from app.models.user import User
+from app.services.device import get_user_device_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -102,3 +107,68 @@ async def send_fcm(
                 )
 
     return stale_tokens
+
+
+async def get_user_language(session: AsyncSession, user_id: uuid.UUID) -> str:
+    result = await session.execute(
+        sa_select(User.language).where(User.id == user_id)
+    )
+    lang = result.scalar_one_or_none()
+    return lang or settings.default_language
+
+
+async def remove_stale_tokens(session: AsyncSession, user_id: uuid.UUID, stale_tokens: list[str]) -> None:
+    for token_str in stale_tokens:
+        result = await session.execute(
+            sa_select(DeviceToken).where(
+                DeviceToken.user_id == user_id,
+                DeviceToken.token == token_str,
+            )
+        )
+        dt = result.scalar_one_or_none()
+        if dt:
+            await session.delete(dt)
+    await session.flush()
+
+
+async def process_push_job(session_factory: async_sessionmaker, job_data: dict) -> None:
+    if not _init_firebase():
+        return
+
+    recipient_id = uuid.UUID(job_data["recipient_id"])
+    notification_type = job_data["type"]
+
+    async with session_factory() as session:
+        lang = await get_user_language(session, recipient_id)
+        devices = await get_user_device_tokens(session, recipient_id)
+
+        if not devices:
+            return
+
+        title, body = build_push_message(notification_type, lang)
+        tokens = [d.token for d in devices]
+        data = {
+            "type": notification_type,
+            "target_type": job_data.get("target_type") or "",
+            "target_id": job_data.get("target_id") or "",
+        }
+
+        stale = await send_fcm(tokens=tokens, title=title, body=body, data=data)
+
+        if stale:
+            await remove_stale_tokens(session, recipient_id, stale)
+            await session.commit()
+
+
+async def push_worker(session_factory: async_sessionmaker, redis: Redis) -> None:
+    logger.info("Push worker started")
+    while True:
+        try:
+            result = await redis.brpop(PUSH_QUEUE_KEY, timeout=5)
+            if result is None:
+                continue
+            _, raw = result
+            job_data = json.loads(raw)
+            await process_push_job(session_factory, job_data)
+        except Exception:
+            logger.exception("Push worker error")

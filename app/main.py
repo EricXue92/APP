@@ -1,13 +1,23 @@
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from app.database import async_session
 from app.redis import redis_client
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from app.services.push import push_worker
+
+    task = asyncio.create_task(push_worker(async_session, redis_client))
     yield
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
     await redis_client.aclose()
 
 
