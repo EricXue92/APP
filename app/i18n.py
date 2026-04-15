@@ -529,6 +529,87 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "zh-Hans": "该赛事已取消",
         "en": "Event is already cancelled",
     },
+    # Push notification messages
+    "push.booking_confirmed.title": {
+        "zh-Hant": "訂場已確認",
+        "zh-Hans": "订场已确认",
+        "en": "Booking Confirmed",
+    },
+    "push.booking_confirmed.body": {
+        "zh-Hant": "您的訂場已確認，請準時參加",
+        "zh-Hans": "您的订场已确认，请准时参加",
+        "en": "Your booking has been confirmed",
+    },
+    "push.booking_cancelled.title": {
+        "zh-Hant": "訂場已取消",
+        "zh-Hans": "订场已取消",
+        "en": "Booking Cancelled",
+    },
+    "push.booking_cancelled.body": {
+        "zh-Hant": "您參加的訂場已被取消",
+        "zh-Hans": "您参加的订场已被取消",
+        "en": "A booking you joined has been cancelled",
+    },
+    "push.match_proposal_received.title": {
+        "zh-Hant": "收到配對邀請",
+        "zh-Hans": "收到配对邀请",
+        "en": "Match Proposal Received",
+    },
+    "push.match_proposal_received.body": {
+        "zh-Hant": "有人邀請您一起打球",
+        "zh-Hans": "有人邀请您一起打球",
+        "en": "Someone wants to play tennis with you",
+    },
+    "push.event_match_ready.title": {
+        "zh-Hant": "賽事對戰已就緒",
+        "zh-Hans": "赛事对战已就绪",
+        "en": "Event Match Ready",
+    },
+    "push.event_match_ready.body": {
+        "zh-Hant": "您的下一場比賽已準備就緒",
+        "zh-Hans": "您的下一场比赛已准备就绪",
+        "en": "Your next match is ready",
+    },
+    "push.event_score_submitted.title": {
+        "zh-Hant": "比分已提交",
+        "zh-Hans": "比分已提交",
+        "en": "Score Submitted",
+    },
+    "push.event_score_submitted.body": {
+        "zh-Hant": "對手已提交比分，請確認",
+        "zh-Hans": "对手已提交比分，请确认",
+        "en": "Your opponent submitted a score, please confirm",
+    },
+    "push.event_score_disputed.title": {
+        "zh-Hant": "比分有爭議",
+        "zh-Hans": "比分有争议",
+        "en": "Score Disputed",
+    },
+    "push.event_score_disputed.body": {
+        "zh-Hant": "比分確認出現爭議，請聯繫管理員",
+        "zh-Hans": "比分确认出现争议，请联系管理员",
+        "en": "A score dispute needs attention",
+    },
+    "push.account_suspended.title": {
+        "zh-Hant": "帳號已被停權",
+        "zh-Hans": "账号已被停权",
+        "en": "Account Suspended",
+    },
+    "push.account_suspended.body": {
+        "zh-Hant": "您的帳號已被管理員停權",
+        "zh-Hans": "您的账号已被管理员停权",
+        "en": "Your account has been suspended by an administrator",
+    },
+    "push.new_chat_message.title": {
+        "zh-Hant": "新訊息",
+        "zh-Hans": "新消息",
+        "en": "New Message",
+    },
+    "push.new_chat_message.body": {
+        "zh-Hant": "您收到一條新訊息",
+        "zh-Hans": "您收到一条新消息",
+        "en": "You have a new message",
+    },
 }
 
 
