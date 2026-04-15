@@ -2,7 +2,11 @@ import uuid
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.notification import Notification, NotificationType
+from app.services.follow import is_mutual, remove_follows_between
 
 
 async def _register_and_get_token(client: AsyncClient, username: str, gender: str = "male", ntrp: str = "3.5") -> tuple[str, str]:
@@ -223,3 +227,134 @@ async def test_cannot_follow_while_blocked(client: AsyncClient, session: AsyncSe
     assert resp.status_code == 400
     resp = await client.post("/api/v1/follows", json={"followed_id": uid1}, headers=_auth(token2))
     assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_is_mutual_direct(client: AsyncClient, session: AsyncSession):
+    """Direct unit test of is_mutual() service function."""
+    token1, uid1 = await _register_and_get_token(client, "ismut1")
+    token2, uid2 = await _register_and_get_token(client, "ismut2")
+    uid1 = uuid.UUID(uid1)
+    uid2 = uuid.UUID(uid2)
+
+    # A follows B — not mutual yet
+    await client.post("/api/v1/follows", json={"followed_id": str(uid2)}, headers=_auth(token1))
+    assert await is_mutual(session, uid1, uid2) is False
+
+    # B follows A — now mutual
+    await client.post("/api/v1/follows", json={"followed_id": str(uid1)}, headers=_auth(token2))
+    assert await is_mutual(session, uid1, uid2) is True
+    assert await is_mutual(session, uid2, uid1) is True
+
+
+@pytest.mark.asyncio
+async def test_remove_follows_between_direct(client: AsyncClient, session: AsyncSession):
+    """Direct unit test of remove_follows_between() service function."""
+    token1, uid1 = await _register_and_get_token(client, "rmfol1")
+    token2, uid2 = await _register_and_get_token(client, "rmfol2")
+    uid1 = uuid.UUID(uid1)
+    uid2 = uuid.UUID(uid2)
+
+    # Create follows in both directions
+    await client.post("/api/v1/follows", json={"followed_id": str(uid2)}, headers=_auth(token1))
+    await client.post("/api/v1/follows", json={"followed_id": str(uid1)}, headers=_auth(token2))
+
+    # Verify both exist before removal
+    assert await is_mutual(session, uid1, uid2) is True
+
+    # Call service function directly
+    await remove_follows_between(session, uid1, uid2)
+    await session.commit()
+
+    # Both directions should be gone
+    assert await is_mutual(session, uid1, uid2) is False
+
+    # Verify via API as well
+    resp = await client.get("/api/v1/follows/following", headers=_auth(token1))
+    assert len(resp.json()) == 0
+    resp = await client.get("/api/v1/follows/following", headers=_auth(token2))
+    assert len(resp.json()) == 0
+
+
+@pytest.mark.asyncio
+async def test_empty_followers_list(client: AsyncClient, session: AsyncSession):
+    """User with no followers returns an empty list."""
+    token1, uid1 = await _register_and_get_token(client, "nofans1")
+
+    resp = await client.get("/api/v1/follows/followers", headers=_auth(token1))
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+    resp = await client.get("/api/v1/follows/following", headers=_auth(token1))
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+@pytest.mark.asyncio
+async def test_follow_unfollow_refollow(client: AsyncClient, session: AsyncSession):
+    """Follow → unfollow → re-follow works and mutual status resets correctly."""
+    token1, uid1 = await _register_and_get_token(client, "refollow1")
+    token2, uid2 = await _register_and_get_token(client, "refollow2")
+
+    # A follows B
+    resp = await client.post("/api/v1/follows", json={"followed_id": uid2}, headers=_auth(token1))
+    assert resp.status_code == 201
+
+    # B follows A — mutual
+    await client.post("/api/v1/follows", json={"followed_id": uid1}, headers=_auth(token2))
+
+    # A unfollows B — breaks mutual
+    resp = await client.delete(f"/api/v1/follows/{uid2}", headers=_auth(token1))
+    assert resp.status_code == 204
+
+    # Verify B's follow of A is now one-way
+    resp = await client.get("/api/v1/follows/following", headers=_auth(token2))
+    assert resp.json()[0]["is_mutual"] is False
+
+    # A re-follows B — mutual again
+    resp = await client.post("/api/v1/follows", json={"followed_id": uid2}, headers=_auth(token1))
+    assert resp.status_code == 201
+    assert resp.json()["is_mutual"] is True
+
+    # Verify mutual is restored in list view
+    resp = await client.get("/api/v1/follows/following", headers=_auth(token2))
+    assert resp.json()[0]["is_mutual"] is True
+
+
+@pytest.mark.asyncio
+async def test_mutual_follow_notifications(client: AsyncClient, session: AsyncSession):
+    """When B follows A (making it mutual), both NEW_FOLLOWER and NEW_MUTUAL notifications exist."""
+    token1, uid1 = await _register_and_get_token(client, "mutnot1")
+    token2, uid2 = await _register_and_get_token(client, "mutnot2")
+    uid1 = uuid.UUID(uid1)
+    uid2 = uuid.UUID(uid2)
+
+    # A follows B — B gets a NEW_FOLLOWER notification
+    await client.post("/api/v1/follows", json={"followed_id": str(uid2)}, headers=_auth(token1))
+
+    result = await session.execute(
+        select(Notification).where(
+            Notification.recipient_id == uid2,
+            Notification.type == NotificationType.NEW_FOLLOWER,
+        )
+    )
+    assert result.scalar_one_or_none() is not None
+
+    # B follows A — A gets NEW_FOLLOWER + NEW_MUTUAL (because it's now mutual)
+    await client.post("/api/v1/follows", json={"followed_id": str(uid1)}, headers=_auth(token2))
+
+    result = await session.execute(
+        select(Notification).where(
+            Notification.recipient_id == uid1,
+            Notification.type == NotificationType.NEW_FOLLOWER,
+        )
+    )
+    assert result.scalar_one_or_none() is not None, "NEW_FOLLOWER notification missing for uid1"
+
+    result = await session.execute(
+        select(Notification).where(
+            Notification.recipient_id == uid1,
+            Notification.type == NotificationType.NEW_MUTUAL,
+        )
+    )
+    assert result.scalar_one_or_none() is not None, "NEW_MUTUAL notification missing for uid1"
