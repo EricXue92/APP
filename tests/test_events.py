@@ -175,3 +175,112 @@ async def test_list_events(client: AsyncClient, session: AsyncSession):
     data = resp.json()
     assert len(data) >= 1
     assert any(e["name"] == "List Cup" for e in data)
+
+
+@pytest.mark.asyncio
+async def test_publish_event(client: AsyncClient, session: AsyncSession):
+    token, _ = await _register_and_get_token(client, "pub_org")
+    resp = await client.post(
+        "/api/v1/events",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "name": "Pub Cup",
+            "event_type": "singles_elimination",
+            "min_ntrp": "3.0",
+            "max_ntrp": "4.0",
+            "max_participants": 8,
+            "registration_deadline": _future_deadline(),
+        },
+    )
+    event_id = resp.json()["id"]
+
+    resp = await client.post(
+        f"/api/v1/events/{event_id}/publish",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "open"
+
+
+@pytest.mark.asyncio
+async def test_join_event(client: AsyncClient, session: AsyncSession):
+    org_token, _ = await _register_and_get_token(client, "join_org", ntrp="3.5")
+    player_token, _ = await _register_and_get_token(client, "join_player", ntrp="3.5")
+
+    resp = await client.post(
+        "/api/v1/events",
+        headers={"Authorization": f"Bearer {org_token}"},
+        json={
+            "name": "Join Cup",
+            "event_type": "singles_elimination",
+            "min_ntrp": "3.0",
+            "max_ntrp": "4.0",
+            "max_participants": 8,
+            "registration_deadline": _future_deadline(),
+        },
+    )
+    event_id = resp.json()["id"]
+    await client.post(f"/api/v1/events/{event_id}/publish", headers={"Authorization": f"Bearer {org_token}"})
+
+    resp = await client.post(
+        f"/api/v1/events/{event_id}/join",
+        headers={"Authorization": f"Bearer {player_token}"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["participant_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_join_event_ntrp_out_of_range(client: AsyncClient, session: AsyncSession):
+    org_token, _ = await _register_and_get_token(client, "ntrp_org", ntrp="3.5")
+    player_token, _ = await _register_and_get_token(client, "ntrp_player", ntrp="5.0")
+
+    resp = await client.post(
+        "/api/v1/events",
+        headers={"Authorization": f"Bearer {org_token}"},
+        json={
+            "name": "NTRP Cup",
+            "event_type": "singles_elimination",
+            "min_ntrp": "3.0",
+            "max_ntrp": "4.0",
+            "max_participants": 8,
+            "registration_deadline": _future_deadline(),
+        },
+    )
+    event_id = resp.json()["id"]
+    await client.post(f"/api/v1/events/{event_id}/publish", headers={"Authorization": f"Bearer {org_token}"})
+
+    resp = await client.post(
+        f"/api/v1/events/{event_id}/join",
+        headers={"Authorization": f"Bearer {player_token}"},
+    )
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_withdraw_from_event(client: AsyncClient, session: AsyncSession):
+    org_token, _ = await _register_and_get_token(client, "wd_org", ntrp="3.5")
+    player_token, _ = await _register_and_get_token(client, "wd_player", ntrp="3.5")
+
+    resp = await client.post(
+        "/api/v1/events",
+        headers={"Authorization": f"Bearer {org_token}"},
+        json={
+            "name": "WD Cup",
+            "event_type": "singles_elimination",
+            "min_ntrp": "3.0",
+            "max_ntrp": "4.0",
+            "max_participants": 8,
+            "registration_deadline": _future_deadline(),
+        },
+    )
+    event_id = resp.json()["id"]
+    await client.post(f"/api/v1/events/{event_id}/publish", headers={"Authorization": f"Bearer {org_token}"})
+    await client.post(f"/api/v1/events/{event_id}/join", headers={"Authorization": f"Bearer {player_token}"})
+
+    resp = await client.post(
+        f"/api/v1/events/{event_id}/withdraw",
+        headers={"Authorization": f"Bearer {player_token}"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["participant_count"] == 0

@@ -19,9 +19,13 @@ from app.schemas.event import (
 from app.services.event import (
     create_event,
     get_event_by_id,
+    join_event,
     list_events,
     list_my_events,
+    publish_event,
+    remove_participant,
     update_event,
+    withdraw_from_event,
 )
 
 router = APIRouter()
@@ -42,7 +46,10 @@ def _participant_response(p) -> EventParticipantResponse:
 
 
 def _event_to_response(event, include_participants: bool = False) -> dict:
-    participant_count = len(event.participants) if event.participants else 0
+    active_statuses = {"registered", "confirmed"}
+    participants = event.participants if event.participants else []
+    active_participants = [p for p in participants if p.status.value in active_statuses]
+    participant_count = len(active_participants)
     data = EventResponse(
         id=event.id,
         creator_id=event.creator_id,
@@ -135,4 +142,69 @@ async def update_existing_event(event_id: str, body: EventUpdateRequest, user: C
     updates = body.model_dump(exclude_unset=True)
     event = await update_event(session, event, **updates)
     event = await get_event_by_id(session, event.id)
+    return _event_to_response(event, include_participants=True)
+
+
+@router.post("/{event_id}/publish", response_model=EventDetailResponse)
+async def publish_existing_event(event_id: str, user: CurrentUser, session: DbSession, lang: Lang):
+    event = await get_event_by_id(session, uuid.UUID(event_id))
+    if event is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=t("event.not_found", lang))
+    if event.creator_id != user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=t("event.not_creator", lang))
+    if event.status != EventStatus.DRAFT:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=t("event.cannot_modify", lang))
+
+    event = await publish_event(session, event)
+    event = await get_event_by_id(session, event.id)
+    return _event_to_response(event, include_participants=True)
+
+
+@router.post("/{event_id}/join", response_model=EventDetailResponse)
+async def join_existing_event(event_id: str, user: CurrentUser, session: DbSession, lang: Lang):
+    event = await get_event_by_id(session, uuid.UUID(event_id))
+    if event is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=t("event.not_found", lang))
+
+    try:
+        event = await join_event(session, event, user, lang)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except LookupError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+
+    return _event_to_response(event, include_participants=True)
+
+
+@router.post("/{event_id}/withdraw", response_model=EventDetailResponse)
+async def withdraw_from_existing_event(event_id: str, user: CurrentUser, session: DbSession, lang: Lang):
+    event = await get_event_by_id(session, uuid.UUID(event_id))
+    if event is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=t("event.not_found", lang))
+
+    try:
+        event = await withdraw_from_event(session, event, user, lang)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+    return _event_to_response(event, include_participants=True)
+
+
+@router.delete("/{event_id}/participants/{user_id}", response_model=EventDetailResponse)
+async def remove_event_participant(event_id: str, user_id: str, user: CurrentUser, session: DbSession, lang: Lang):
+    event = await get_event_by_id(session, uuid.UUID(event_id))
+    if event is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=t("event.not_found", lang))
+    if event.creator_id != user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=t("event.not_creator", lang))
+    if event.status != EventStatus.OPEN:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=t("event.not_open", lang))
+
+    try:
+        event = await remove_participant(session, event, uuid.UUID(user_id), lang)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
     return _event_to_response(event, include_participants=True)

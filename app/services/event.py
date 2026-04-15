@@ -93,7 +93,11 @@ async def list_events(
     event_type: str | None = None,
     current_user_id: uuid.UUID | None = None,
 ) -> list[Event]:
-    query = select(Event).join(User, Event.creator_id == User.id)
+    query = (
+        select(Event)
+        .join(User, Event.creator_id == User.id)
+        .options(selectinload(Event.participants))
+    )
 
     if status:
         query = query.where(Event.status == EventStatus(status))
@@ -125,6 +129,7 @@ async def list_my_events(
     joined = select(EventParticipant.event_id).where(EventParticipant.user_id == user_id)
     query = (
         select(Event)
+        .options(selectinload(Event.participants))
         .where(Event.id.in_(created.union(joined)))
         .order_by(Event.created_at.desc())
     )
@@ -143,3 +148,107 @@ async def update_event(
     await session.commit()
     await session.refresh(event)
     return event
+
+
+async def publish_event(session: AsyncSession, event: Event) -> Event:
+    event.status = EventStatus.OPEN
+    await session.commit()
+    await session.refresh(event)
+    return event
+
+
+async def join_event(
+    session: AsyncSession,
+    event: Event,
+    user: User,
+    lang: str = "en",
+) -> Event:
+    from app.i18n import t
+    from app.services.block import is_blocked
+
+    if event.status != EventStatus.OPEN:
+        raise ValueError(t("event.not_open", lang))
+
+    # Check already joined
+    for p in event.participants:
+        if p.user_id == user.id and p.status != EventParticipantStatus.WITHDRAWN:
+            raise LookupError(t("event.already_joined", lang))
+
+    # Check NTRP
+    user_ntrp = _ntrp_to_float(user.ntrp_level)
+    if user_ntrp < _ntrp_to_float(event.min_ntrp) or user_ntrp > _ntrp_to_float(event.max_ntrp):
+        raise PermissionError(t("event.ntrp_out_of_range", lang))
+
+    # Check gender
+    if event.gender_requirement == "male_only" and user.gender != Gender.MALE:
+        raise PermissionError(t("event.gender_mismatch", lang))
+    if event.gender_requirement == "female_only" and user.gender != Gender.FEMALE:
+        raise PermissionError(t("event.gender_mismatch", lang))
+
+    # Check block
+    if await is_blocked(session, user.id, event.creator_id):
+        raise PermissionError(t("block.user_blocked", lang))
+
+    # Check capacity
+    active_count = sum(1 for p in event.participants if p.status == EventParticipantStatus.REGISTERED)
+    if active_count >= event.max_participants:
+        raise LookupError(t("event.full", lang))
+
+    participant = EventParticipant(
+        event_id=event.id,
+        user_id=user.id,
+    )
+    session.add(participant)
+
+    # Notify organizer
+    await create_notification(
+        session,
+        recipient_id=event.creator_id,
+        type=NotificationType.EVENT_JOINED,
+        actor_id=user.id,
+        target_type="event",
+        target_id=event.id,
+    )
+
+    await session.commit()
+    event = await get_event_by_id(session, event.id)
+    return event
+
+
+async def withdraw_from_event(
+    session: AsyncSession,
+    event: Event,
+    user: User,
+    lang: str = "en",
+) -> Event:
+    from app.i18n import t
+
+    if event.status not in (EventStatus.OPEN, EventStatus.DRAFT):
+        raise ValueError(t("event.cannot_withdraw", lang))
+
+    for p in event.participants:
+        if p.user_id == user.id and p.status == EventParticipantStatus.REGISTERED:
+            p.status = EventParticipantStatus.WITHDRAWN
+            await session.commit()
+            event = await get_event_by_id(session, event.id)
+            return event
+
+    raise ValueError(t("event.not_registered", lang))
+
+
+async def remove_participant(
+    session: AsyncSession,
+    event: Event,
+    target_user_id: uuid.UUID,
+    lang: str = "en",
+) -> Event:
+    from app.i18n import t
+
+    for p in event.participants:
+        if p.user_id == target_user_id and p.status == EventParticipantStatus.REGISTERED:
+            p.status = EventParticipantStatus.WITHDRAWN
+            await session.commit()
+            event = await get_event_by_id(session, event.id)
+            return event
+
+    raise ValueError(t("event.not_registered", lang))
