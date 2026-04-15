@@ -30,7 +30,15 @@ async def _check_rate_limit(user_id: str) -> None:
 def _build_system_prompt(user: User, lang: str) -> str:
     today = date.today().isoformat()
 
-    if lang.startswith("zh"):
+    if lang == "zh-Hant":
+        return (
+            "你是一個網球約球助手。從用戶的自然語言輸入中提取約球資訊。\n"
+            f"今天日期：{today}\n"
+            f"用戶所在城市：{user.city}\n"
+            "請使用 extract_booking 工具返回結構化數據。"
+            "未提及的欄位設為 null。"
+        )
+    if lang == "zh-Hans":
         return (
             "你是一个网球约球助手。从用户的自然语言输入中提取约球信息。\n"
             f"今天日期：{today}\n"

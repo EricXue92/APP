@@ -1,6 +1,15 @@
-import pytest
+from typing import Any
+from unittest.mock import AsyncMock, patch
 
+import pytest
+from httpx import AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.court import Court, CourtType
+from app.models.user import AuthProvider
+from app.services.assistant import parse_booking
 from app.services.llm import RateLimitError, get_provider
+from app.services.user import create_user_with_auth
 
 
 @pytest.mark.asyncio
@@ -20,20 +29,6 @@ def test_rate_limit_error_is_exception():
     err = RateLimitError("too many requests")
     assert isinstance(err, Exception)
     assert str(err) == "too many requests"
-
-
-import uuid
-from typing import Any
-from unittest.mock import AsyncMock, patch
-
-from httpx import AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from app.models.court import Court, CourtType
-from app.models.user import AuthProvider
-from app.services.assistant import parse_booking
-from app.services.llm import RateLimitError
-from app.services.user import create_user_with_auth
 
 
 class FakeProvider:
