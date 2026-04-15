@@ -23,7 +23,7 @@ class EventStatus(str, enum.Enum):
     CANCELLED = "cancelled"
 
 
-class ParticipantStatus(str, enum.Enum):
+class EventParticipantStatus(str, enum.Enum):
     REGISTERED = "registered"
     CONFIRMED = "confirmed"
     WITHDRAWN = "withdrawn"
@@ -78,7 +78,7 @@ class EventParticipant(Base):
     seed: Mapped[int | None] = mapped_column(Integer, nullable=True)
     group_name: Mapped[str | None] = mapped_column(String(10), nullable=True)
     team_name: Mapped[str | None] = mapped_column(String(10), nullable=True)
-    status: Mapped[ParticipantStatus] = mapped_column(Enum(ParticipantStatus), default=ParticipantStatus.REGISTERED)
+    status: Mapped[EventParticipantStatus] = mapped_column(Enum(EventParticipantStatus), default=EventParticipantStatus.REGISTERED)
     joined_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     event: Mapped["Event"] = relationship(back_populates="participants", foreign_keys=[event_id])
