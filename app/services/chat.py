@@ -103,6 +103,49 @@ async def get_room_by_booking_id(session: AsyncSession, booking_id: uuid.UUID) -
     return result.scalar_one_or_none()
 
 
+async def create_event_chat_room(
+    session: AsyncSession,
+    *,
+    event: "Event",
+    participant_ids: list[uuid.UUID],
+) -> ChatRoom:
+    room = ChatRoom(
+        type=RoomType.GROUP,
+        event_id=event.id,
+        name=event.name,
+    )
+    session.add(room)
+    await session.flush()
+
+    for uid in participant_ids:
+        participant = ChatParticipant(room_id=room.id, user_id=uid)
+        session.add(participant)
+    await session.flush()
+
+    await session.refresh(room)
+    room = await get_room_by_id(session, room.id)
+    return room
+
+
+async def get_room_by_event_id(session: AsyncSession, event_id: uuid.UUID) -> ChatRoom | None:
+    result = await session.execute(
+        select(ChatRoom)
+        .options(
+            selectinload(ChatRoom.participants).selectinload(ChatParticipant.user),
+        )
+        .where(ChatRoom.event_id == event_id)
+        .execution_options(populate_existing=True)
+    )
+    return result.scalar_one_or_none()
+
+
+async def set_event_room_readonly(session: AsyncSession, *, event_id: uuid.UUID) -> None:
+    room = await get_room_by_event_id(session, event_id)
+    if room:
+        room.is_readonly = True
+        await session.flush()
+
+
 async def get_rooms_for_user(session: AsyncSession, user_id: uuid.UUID) -> list[ChatRoom]:
     result = await session.execute(
         select(ChatRoom)
