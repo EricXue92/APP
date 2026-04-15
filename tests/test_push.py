@@ -118,3 +118,56 @@ async def test_enqueue_push_chat_sends_when_no_manager():
 @pytest.mark.asyncio
 async def test_pushable_types_count():
     assert len(PUSHABLE_TYPES) == 8
+
+
+from app.services.push import build_push_message, send_fcm
+
+
+@pytest.mark.asyncio
+async def test_build_push_message_en():
+    title, body = build_push_message("booking_confirmed", "en")
+    assert title == "Booking Confirmed"
+    assert "confirmed" in body.lower()
+
+
+@pytest.mark.asyncio
+async def test_build_push_message_zh_hant():
+    title, body = build_push_message("booking_confirmed", "zh-Hant")
+    assert "確認" in title
+
+
+@pytest.mark.asyncio
+async def test_build_push_message_all_types():
+    for ntype in PUSH_TYPES:
+        title, body = build_push_message(ntype, "en")
+        assert len(title) > 0
+        assert len(body) > 0
+
+
+@pytest.mark.asyncio
+async def test_send_fcm_returns_stale_tokens(monkeypatch):
+    from unittest.mock import patch, MagicMock
+    import firebase_admin.messaging as fcm_module
+
+    mock_response = MagicMock()
+    mock_response.responses = [
+        MagicMock(success=True, exception=None),
+        MagicMock(success=False, exception=MagicMock(code="UNREGISTERED")),
+        MagicMock(success=False, exception=MagicMock(code="INTERNAL")),
+    ]
+
+    with patch.object(fcm_module, "send_each_for_multicast", return_value=mock_response):
+        stale = await send_fcm(
+            tokens=["good-token", "stale-token", "error-token"],
+            title="Test",
+            body="Test body",
+            data={"type": "booking_confirmed"},
+        )
+
+    assert stale == ["stale-token"]
+
+
+@pytest.mark.asyncio
+async def test_send_fcm_empty_tokens():
+    stale = await send_fcm(tokens=[], title="Test", body="Body", data={})
+    assert stale == []
