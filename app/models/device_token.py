@@ -1,11 +1,18 @@
+import enum
 import uuid
 from datetime import datetime
 
 from sqlalchemy import DateTime, ForeignKey, String, UniqueConstraint, func
+from sqlalchemy import Enum as SAEnum
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
+
+
+class Platform(str, enum.Enum):
+    IOS = "ios"
+    ANDROID = "android"
 
 
 class DeviceToken(Base):
@@ -14,7 +21,7 @@ class DeviceToken(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
-    platform: Mapped[str] = mapped_column(String(10))
-    token: Mapped[str] = mapped_column(String(500))
+    platform: Mapped[Platform] = mapped_column(SAEnum(Platform))
+    token: Mapped[str] = mapped_column(String(4096))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

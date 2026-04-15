@@ -4,7 +4,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.device_token import DeviceToken
+from app.models.device_token import DeviceToken, Platform
 
 
 @pytest.mark.asyncio
@@ -15,13 +15,13 @@ async def test_create_device_token(session: AsyncSession):
     session.add(user)
     await session.flush()
 
-    token = DeviceToken(user_id=user.id, platform="ios", token="fcm-token-abc123")
+    token = DeviceToken(user_id=user.id, platform=Platform.IOS, token="fcm-token-abc123")
     session.add(token)
     await session.flush()
 
     result = await session.execute(select(DeviceToken).where(DeviceToken.user_id == user.id))
     saved = result.scalar_one()
-    assert saved.platform == "ios"
+    assert saved.platform == Platform.IOS
     assert saved.token == "fcm-token-abc123"
     assert saved.id is not None
     assert saved.created_at is not None
