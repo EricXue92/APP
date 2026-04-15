@@ -509,3 +509,161 @@ async def test_participant_cancel_own_participation(client: AsyncClient, session
     participants = resp.json()["participants"]
     joiner_p = [p for p in participants if p["user_id"] == joiner_id]
     assert joiner_p[0]["status"] == "cancelled"
+
+
+# --- Gap Tests: Cancel Time Tiers ---
+
+@pytest.mark.asyncio
+async def test_cancel_24h_tier_deducts_1(client: AsyncClient, session: AsyncSession):
+    """Cancel >24h before play deducts 1 credit (non-first cancel)."""
+    from sqlalchemy import update as sa_update
+    from app.models.credit import CreditReason
+
+    token1, uid1 = await _register_and_get_token(client, "tier24h")
+    court = await _seed_court(session)
+
+    # Set cancel_count=1 so it's not first-cancel warning
+    await session.execute(sa_update(User).where(User.id == uuid.UUID(uid1)).values(cancel_count=1))
+    await session.commit()
+
+    # Create booking 7 days in future (>24h) — default _future_date()
+    create_resp = await _create_booking(client, token1, str(court.id))
+    assert create_resp.status_code == 201
+    booking_id = create_resp.json()["id"]
+
+    resp = await client.post(
+        f"/api/v1/bookings/{booking_id}/cancel",
+        headers={"Authorization": f"Bearer {token1}"},
+    )
+    assert resp.status_code == 200
+
+    profile = await client.get("/api/v1/users/me", headers={"Authorization": f"Bearer {token1}"})
+    assert profile.json()["credit_score"] == 79, "CANCEL_24H should deduct 1 credit"
+
+
+@pytest.mark.asyncio
+async def test_cancel_12_24h_tier_deducts_2(client: AsyncClient, session: AsyncSession):
+    """Cancel 12-24h before play deducts 2 credit."""
+    from sqlalchemy import update as sa_update
+    from app.models.credit import CreditReason
+
+    token1, uid1 = await _register_and_get_token(client, "tier12_24h")
+    court = await _seed_court(session)
+
+    # Set cancel_count=1 so it's not first-cancel warning
+    await session.execute(sa_update(User).where(User.id == uuid.UUID(uid1)).values(cancel_count=1))
+    await session.commit()
+
+    # Create booking, then patch play_date/start_time to be ~18h from now
+    create_resp = await _create_booking(client, token1, str(court.id))
+    assert create_resp.status_code == 201
+    booking_id = create_resp.json()["id"]
+
+    # Mock _get_cancel_reason to return CANCEL_12_24H
+    with patch("app.services.booking._get_cancel_reason", return_value=CreditReason.CANCEL_12_24H):
+        resp = await client.post(
+            f"/api/v1/bookings/{booking_id}/cancel",
+            headers={"Authorization": f"Bearer {token1}"},
+        )
+    assert resp.status_code == 200
+
+    profile = await client.get("/api/v1/users/me", headers={"Authorization": f"Bearer {token1}"})
+    assert profile.json()["credit_score"] == 78, "CANCEL_12_24H should deduct 2 credit"
+
+
+@pytest.mark.asyncio
+async def test_cancel_2h_tier_deducts_5(client: AsyncClient, session: AsyncSession):
+    """Cancel <12h before play deducts 5 credit."""
+    from sqlalchemy import update as sa_update
+    from app.models.credit import CreditReason
+
+    token1, uid1 = await _register_and_get_token(client, "tier2h")
+    court = await _seed_court(session)
+
+    # Set cancel_count=1 so it's not first-cancel warning
+    await session.execute(sa_update(User).where(User.id == uuid.UUID(uid1)).values(cancel_count=1))
+    await session.commit()
+
+    create_resp = await _create_booking(client, token1, str(court.id))
+    assert create_resp.status_code == 201
+    booking_id = create_resp.json()["id"]
+
+    # Mock _get_cancel_reason to return CANCEL_2H
+    with patch("app.services.booking._get_cancel_reason", return_value=CreditReason.CANCEL_2H):
+        resp = await client.post(
+            f"/api/v1/bookings/{booking_id}/cancel",
+            headers={"Authorization": f"Bearer {token1}"},
+        )
+    assert resp.status_code == 200
+
+    profile = await client.get("/api/v1/users/me", headers={"Authorization": f"Bearer {token1}"})
+    assert profile.json()["credit_score"] == 75, "CANCEL_2H should deduct 5 credit"
+
+
+# --- Gap Tests: Block filtering ---
+
+@pytest.mark.asyncio
+async def test_block_filters_bookings_from_listing(client: AsyncClient, session: AsyncSession):
+    """After B blocks A, A's open bookings should not appear in B's listing."""
+    token_a, uid_a = await _register_and_get_token(client, "bkfilt_a")
+    token_b, uid_b = await _register_and_get_token(client, "bkfilt_b")
+    court = await _seed_court(session)
+
+    # A creates an open booking
+    create_resp = await _create_booking(client, token_a, str(court.id))
+    assert create_resp.status_code == 201
+
+    # B can see it
+    resp = await client.get("/api/v1/bookings", headers={"Authorization": f"Bearer {token_b}"})
+    assert resp.status_code == 200
+    assert len(resp.json()) >= 1
+
+    # B blocks A
+    resp = await client.post(
+        "/api/v1/blocks",
+        json={"blocked_id": uid_a},
+        headers={"Authorization": f"Bearer {token_b}"},
+    )
+    assert resp.status_code == 201
+
+    # B's listing should exclude A's bookings
+    resp = await client.get("/api/v1/bookings", headers={"Authorization": f"Bearer {token_b}"})
+    assert resp.status_code == 200
+    creator_ids = [b.get("creator_id") for b in resp.json()]
+    assert uid_a not in creator_ids
+
+
+# --- Gap Tests: Confirm creates chat room ---
+
+@pytest.mark.asyncio
+async def test_confirm_creates_chat_room(client: AsyncClient, session: AsyncSession):
+    """Confirming a booking creates a chat room linked to that booking."""
+    from sqlalchemy import select
+    from app.models.chat import ChatRoom
+
+    token1, uid1 = await _register_and_get_token(client, "chatcreate1")
+    token2, uid2 = await _register_and_get_token(client, "chatcreate2")
+    court = await _seed_court(session)
+
+    create_resp = await _create_booking(client, token1, str(court.id))
+    booking_id = create_resp.json()["id"]
+
+    # Join + accept + confirm
+    await client.post(f"/api/v1/bookings/{booking_id}/join", headers={"Authorization": f"Bearer {token2}"})
+    detail = await client.get(f"/api/v1/bookings/{booking_id}")
+    joiner_id = detail.json()["participants"][1]["user_id"]
+    await client.patch(
+        f"/api/v1/bookings/{booking_id}/participants/{joiner_id}",
+        headers={"Authorization": f"Bearer {token1}"},
+        json={"status": "accepted"},
+    )
+    resp = await client.post(f"/api/v1/bookings/{booking_id}/confirm", headers={"Authorization": f"Bearer {token1}"})
+    assert resp.status_code == 200
+
+    # Verify chat room exists
+    result = await session.execute(
+        select(ChatRoom).where(ChatRoom.booking_id == uuid.UUID(booking_id))
+    )
+    room = result.scalar_one_or_none()
+    assert room is not None, "Chat room should be created on confirm"
+    assert room.is_readonly is False
