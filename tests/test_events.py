@@ -63,3 +63,115 @@ async def test_create_event_chat_room(session: AsyncSession):
     assert room.name == "Test Tournament"
     assert room.type.value == "group"
     assert len(room.participants) == 2
+
+
+@pytest.mark.asyncio
+async def test_create_event(client: AsyncClient, session: AsyncSession):
+    token, user_id = await _register_and_get_token(client, "organizer1")
+
+    resp = await client.post(
+        "/api/v1/events",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "name": "Spring Cup",
+            "event_type": "singles_elimination",
+            "min_ntrp": "3.0",
+            "max_ntrp": "4.0",
+            "max_participants": 8,
+            "games_per_set": 6,
+            "num_sets": 3,
+            "match_tiebreak": False,
+            "registration_deadline": _future_deadline(),
+        },
+    )
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["name"] == "Spring Cup"
+    assert data["status"] == "draft"
+    assert data["event_type"] == "singles_elimination"
+    assert data["participant_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_create_event_credit_too_low(client: AsyncClient, session: AsyncSession):
+    token, user_id = await _register_and_get_token(client, "lowcred_org")
+
+    from sqlalchemy import update
+    await session.execute(update(User).where(User.id == uuid.UUID(user_id)).values(credit_score=70))
+    await session.commit()
+
+    resp = await client.post(
+        "/api/v1/events",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "name": "Bad Cup",
+            "event_type": "singles_elimination",
+            "min_ntrp": "3.0",
+            "max_ntrp": "4.0",
+            "max_participants": 8,
+            "registration_deadline": _future_deadline(),
+        },
+    )
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_get_event_detail(client: AsyncClient, session: AsyncSession):
+    token, user_id = await _register_and_get_token(client, "detail_org")
+
+    create_resp = await client.post(
+        "/api/v1/events",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "name": "Detail Cup",
+            "event_type": "round_robin",
+            "min_ntrp": "3.0",
+            "max_ntrp": "4.0",
+            "max_participants": 6,
+            "registration_deadline": _future_deadline(),
+        },
+    )
+    event_id = create_resp.json()["id"]
+
+    resp = await client.get(
+        f"/api/v1/events/{event_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["name"] == "Detail Cup"
+    assert data["participants"] == []
+
+
+@pytest.mark.asyncio
+async def test_list_events(client: AsyncClient, session: AsyncSession):
+    token, _ = await _register_and_get_token(client, "list_org")
+
+    create_resp = await client.post(
+        "/api/v1/events",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "name": "List Cup",
+            "event_type": "singles_elimination",
+            "min_ntrp": "3.0",
+            "max_ntrp": "4.0",
+            "max_participants": 8,
+            "registration_deadline": _future_deadline(),
+        },
+    )
+    event_id = create_resp.json()["id"]
+
+    # Publish it so it shows in listings
+    await client.post(
+        f"/api/v1/events/{event_id}/publish",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    resp = await client.get(
+        "/api/v1/events",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) >= 1
+    assert any(e["name"] == "List Cup" for e in data)
