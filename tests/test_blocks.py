@@ -336,3 +336,121 @@ async def test_suspended_user_rejected(client: AsyncClient, session: AsyncSessio
     resp = await client.get("/api/v1/blocks", headers=_auth(token1))
     assert resp.status_code == 403
     assert "suspended" in resp.json()["detail"].lower()
+
+
+# --- Gap tests ---
+
+
+@pytest.mark.asyncio
+async def test_is_blocked_all_four_directions(client: AsyncClient, session: AsyncSession):
+    """is_blocked() checks both directions: A→B is True and B→A is True after A blocks B."""
+    from app.services.block import is_blocked
+
+    token1, uid1 = await _register_and_get_token(client, "isblocked_a")
+    token2, uid2 = await _register_and_get_token(client, "isblocked_b")
+    token3, uid3 = await _register_and_get_token(client, "isblocked_c")
+
+    uid1 = uuid.UUID(uid1)
+    uid2 = uuid.UUID(uid2)
+    uid3 = uuid.UUID(uid3)
+
+    # Before any block: neither direction is blocked
+    assert await is_blocked(session, uid1, uid2) is False
+    assert await is_blocked(session, uid2, uid1) is False
+
+    # A blocks B
+    await client.post("/api/v1/blocks", json={"blocked_id": str(uid2)}, headers=_auth(token1))
+
+    # Both directions should return True (symmetric)
+    assert await is_blocked(session, uid1, uid2) is True
+    assert await is_blocked(session, uid2, uid1) is True
+
+    # Unrelated user C is not blocked
+    assert await is_blocked(session, uid1, uid3) is False
+    assert await is_blocked(session, uid3, uid1) is False
+
+
+@pytest.mark.asyncio
+async def test_block_expires_pending_proposals(client: AsyncClient, session: AsyncSession):
+    """Blocking a user expires any pending match proposals between the two users."""
+    from datetime import date, time, timedelta
+
+    from app.models.matching import MatchProposal, ProposalStatus
+    from sqlalchemy import select
+
+    token1, uid1 = await _register_and_get_token(client, "propblock_a")
+    token2, uid2 = await _register_and_get_token(client, "propblock_b")
+    court = await _seed_court(session)
+
+    uid1 = uuid.UUID(uid1)
+    uid2 = uuid.UUID(uid2)
+
+    # Create a pending proposal directly in the DB (avoids complex preference setup)
+    play_date = date.today() + timedelta(days=3)
+    proposal = MatchProposal(
+        proposer_id=uid1,
+        target_id=uid2,
+        court_id=court.id,
+        match_type="singles",
+        play_date=play_date,
+        start_time=time(10, 0),
+        end_time=time(12, 0),
+        status=ProposalStatus.PENDING,
+    )
+    session.add(proposal)
+    await session.commit()
+    await session.refresh(proposal)
+    proposal_id = proposal.id
+
+    # Confirm it's pending before block
+    result = await session.execute(select(MatchProposal).where(MatchProposal.id == proposal_id))
+    pre_block = result.scalar_one()
+    assert pre_block.status == ProposalStatus.PENDING
+
+    # A blocks B — should trigger expire_proposals_on_block
+    resp = await client.post("/api/v1/blocks", json={"blocked_id": str(uid2)}, headers=_auth(token1))
+    assert resp.status_code == 201
+
+    # Proposal should now be EXPIRED
+    await session.refresh(pre_block)
+    assert pre_block.status == ProposalStatus.EXPIRED
+
+
+@pytest.mark.asyncio
+async def test_mutual_blocks(client: AsyncClient, session: AsyncSession):
+    """A blocks B and B blocks A should both succeed (separate records)."""
+    token1, uid1 = await _register_and_get_token(client, "mutual_a")
+    token2, uid2 = await _register_and_get_token(client, "mutual_b")
+
+    # A blocks B
+    resp1 = await client.post("/api/v1/blocks", json={"blocked_id": uid2}, headers=_auth(token1))
+    assert resp1.status_code == 201
+
+    # B blocks A — should also succeed (independent record)
+    resp2 = await client.post("/api/v1/blocks", json={"blocked_id": uid1}, headers=_auth(token2))
+    assert resp2.status_code == 201
+
+    # Verify both blocks exist via list endpoint
+    list1 = await client.get("/api/v1/blocks", headers=_auth(token1))
+    list2 = await client.get("/api/v1/blocks", headers=_auth(token2))
+    assert len(list1.json()) == 1
+    assert len(list2.json()) == 1
+
+
+@pytest.mark.asyncio
+async def test_block_unblock_reblock(client: AsyncClient, session: AsyncSession):
+    """Block → unblock → re-block should succeed with no duplicate constraint error."""
+    token1, uid1 = await _register_and_get_token(client, "reblock_a")
+    token2, uid2 = await _register_and_get_token(client, "reblock_b")
+
+    # First block
+    resp = await client.post("/api/v1/blocks", json={"blocked_id": uid2}, headers=_auth(token1))
+    assert resp.status_code == 201
+
+    # Unblock (hard delete)
+    resp = await client.delete(f"/api/v1/blocks/{uid2}", headers=_auth(token1))
+    assert resp.status_code == 204
+
+    # Re-block — should succeed, no unique constraint violation
+    resp = await client.post("/api/v1/blocks", json={"blocked_id": uid2}, headers=_auth(token1))
+    assert resp.status_code == 201
