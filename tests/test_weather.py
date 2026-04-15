@@ -1,7 +1,12 @@
 import uuid
-from datetime import date, time
+from datetime import date, time, timedelta
+from unittest.mock import AsyncMock, patch
 
 import pytest
+from httpx import AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.court import Court, CourtType
 
 
 def test_round_coord():
@@ -160,3 +165,156 @@ def test_cache_ttl_5_days():
 
     ttl = _cache_ttl(date.today() + timedelta(days=5))
     assert ttl == 10800  # 3 hours
+
+
+# ── Endpoint tests ──────────────────────────────────────────────────────
+
+
+async def _register_and_get_token(client: AsyncClient, username: str) -> tuple[str, str]:
+    resp = await client.post(
+        "/api/v1/auth/register/username",
+        params={
+            "nickname": f"Player_{username}",
+            "gender": "male",
+            "city": "Hong Kong",
+            "ntrp_level": "3.5",
+            "language": "en",
+        },
+        json={"username": username, "password": "pass1234", "email": f"{username}@example.com"},
+    )
+    data = resp.json()
+    return data["access_token"], data["user_id"]
+
+
+async def _seed_court_with_coords(session: AsyncSession) -> Court:
+    court = Court(
+        name="Victoria Park Tennis",
+        address="Victoria Park, Causeway Bay",
+        city="Hong Kong",
+        latitude=22.2820,
+        longitude=114.1880,
+        court_type=CourtType.OUTDOOR,
+        is_approved=True,
+    )
+    session.add(court)
+    await session.commit()
+    await session.refresh(court)
+    return court
+
+
+def _mock_daily_response():
+    future_date = (date.today() + timedelta(days=3)).isoformat()
+    return {
+        "code": "200",
+        "daily": [
+            {
+                "fxDate": future_date,
+                "tempMax": "30",
+                "humidity": "70",
+                "windSpeedDay": "12",
+                "uvIndex": "6",
+                "textDay": "partly_cloudy",
+                "iconDay": "partly_cloudy",
+            }
+        ],
+    }
+
+
+def _mock_warning_response_empty():
+    return {"code": "200", "warning": []}
+
+
+@pytest.mark.asyncio
+async def test_weather_endpoint_success(client: AsyncClient, session: AsyncSession):
+    token, _ = await _register_and_get_token(client, "weather_user1")
+    court = await _seed_court_with_coords(session)
+    future_date = (date.today() + timedelta(days=3)).isoformat()
+
+    mock_redis = AsyncMock()
+    mock_redis.get = AsyncMock(return_value=None)  # no cache hit
+    mock_redis.set = AsyncMock(return_value=True)
+
+    with (
+        patch("app.services.weather._fetch_qweather") as mock_fetch,
+        patch("app.services.weather.redis_client", mock_redis),
+    ):
+        mock_fetch.side_effect = [
+            _mock_daily_response(),    # daily forecast
+            _mock_warning_response_empty(),  # warnings
+        ]
+
+        resp = await client.get(
+            "/api/v1/weather",
+            headers={"Authorization": f"Bearer {token}"},
+            params={"court_id": str(court.id), "date": future_date},
+        )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["court_id"] == str(court.id)
+    assert data["temperature"] == 30
+    assert data["allows_free_cancel"] is False
+
+
+@pytest.mark.asyncio
+async def test_weather_endpoint_court_not_found(client: AsyncClient, session: AsyncSession):
+    token, _ = await _register_and_get_token(client, "weather_user2")
+    future_date = (date.today() + timedelta(days=3)).isoformat()
+    fake_id = str(uuid.uuid4())
+
+    resp = await client.get(
+        "/api/v1/weather",
+        headers={"Authorization": f"Bearer {token}"},
+        params={"court_id": fake_id, "date": future_date},
+    )
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_weather_endpoint_no_coordinates(client: AsyncClient, session: AsyncSession):
+    token, _ = await _register_and_get_token(client, "weather_user3")
+    court = Court(
+        name="No Coords Court",
+        address="Somewhere",
+        city="Hong Kong",
+        court_type=CourtType.OUTDOOR,
+        is_approved=True,
+    )
+    session.add(court)
+    await session.commit()
+    await session.refresh(court)
+
+    future_date = (date.today() + timedelta(days=3)).isoformat()
+    resp = await client.get(
+        "/api/v1/weather",
+        headers={"Authorization": f"Bearer {token}"},
+        params={"court_id": str(court.id), "date": future_date},
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_weather_endpoint_date_in_past(client: AsyncClient, session: AsyncSession):
+    token, _ = await _register_and_get_token(client, "weather_user4")
+    court = await _seed_court_with_coords(session)
+    past_date = (date.today() - timedelta(days=1)).isoformat()
+
+    resp = await client.get(
+        "/api/v1/weather",
+        headers={"Authorization": f"Bearer {token}"},
+        params={"court_id": str(court.id), "date": past_date},
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_weather_endpoint_date_too_far(client: AsyncClient, session: AsyncSession):
+    token, _ = await _register_and_get_token(client, "weather_user5")
+    court = await _seed_court_with_coords(session)
+    far_date = (date.today() + timedelta(days=8)).isoformat()
+
+    resp = await client.get(
+        "/api/v1/weather",
+        headers={"Authorization": f"Bearer {token}"},
+        params={"court_id": str(court.id), "date": far_date},
+    )
+    assert resp.status_code == 400
