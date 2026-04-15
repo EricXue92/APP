@@ -607,3 +607,59 @@ async def test_websocket_invalid_token(client: AsyncClient, session: AsyncSessio
         with pytest.raises(Exception):
             with sync_client.websocket_connect("/api/v1/chat/ws?token=invalid_token"):
                 pass
+
+
+# --- Admin Tests ---
+
+from app.models.user import UserRole
+
+
+@pytest.mark.asyncio
+async def test_admin_delete_message(client: AsyncClient, session: AsyncSession):
+    token1, token2, uid1, uid2, booking_id, room = await _setup_confirmed_booking_with_room(client, session)
+
+    # Send a message
+    resp = await client.post(
+        f"/api/v1/chat/rooms/{room.id}/messages",
+        headers={"Authorization": f"Bearer {token1}"},
+        json={"type": "text", "content": "delete me"},
+    )
+    msg_id = resp.json()["id"]
+
+    # Make user1 an admin
+    from app.models.user import User
+    user = await session.get(User, uuid.UUID(uid1))
+    user.role = UserRole.ADMIN
+    await session.commit()
+
+    # Delete message
+    resp = await client.delete(
+        f"/api/v1/admin/chat/messages/{msg_id}",
+        headers={"Authorization": f"Bearer {token1}"},
+    )
+    assert resp.status_code == 200
+
+    # Verify message is soft-deleted
+    resp = await client.get(
+        f"/api/v1/chat/rooms/{room.id}/messages",
+        headers={"Authorization": f"Bearer {token1}"},
+    )
+    assert resp.json()[0]["is_deleted"] is True
+
+
+@pytest.mark.asyncio
+async def test_non_admin_cannot_delete_message(client: AsyncClient, session: AsyncSession):
+    token1, token2, uid1, uid2, booking_id, room = await _setup_confirmed_booking_with_room(client, session)
+
+    resp = await client.post(
+        f"/api/v1/chat/rooms/{room.id}/messages",
+        headers={"Authorization": f"Bearer {token1}"},
+        json={"type": "text", "content": "keep me"},
+    )
+    msg_id = resp.json()["id"]
+
+    resp = await client.delete(
+        f"/api/v1/admin/chat/messages/{msg_id}",
+        headers={"Authorization": f"Bearer {token1}"},
+    )
+    assert resp.status_code == 403

@@ -5,7 +5,7 @@ import uuid
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect, status
 
 from app.database import async_session
-from app.dependencies import CurrentUser, DbSession, Lang
+from app.dependencies import AdminUser, CurrentUser, DbSession, Lang
 from app.i18n import t
 from app.schemas.chat import MessageResponse, RoomResponse, ParticipantInfo, SendMessageRequest
 from app.services.auth import decode_token
@@ -163,6 +163,25 @@ async def mark_read(
         await session.commit()
     except LookupError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=t("chat.not_participant", lang))
+    return {"status": "ok"}
+
+
+admin_router = APIRouter()
+
+
+@admin_router.delete("/messages/{message_id}")
+async def admin_delete_message(
+    message_id: str,
+    admin: AdminUser,
+    session: DbSession,
+    lang: Lang,
+):
+    from app.models.chat import Message
+    msg = await session.get(Message, uuid.UUID(message_id))
+    if msg is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=t("chat.room_not_found", lang))
+    msg.is_deleted = True
+    await session.commit()
     return {"status": "ok"}
 
 

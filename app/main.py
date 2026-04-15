@@ -29,6 +29,7 @@ def create_app() -> FastAPI:
     app.include_router(matching.router, prefix="/api/v1/matching", tags=["matching"])
     app.include_router(reports.router, prefix="/api/v1/reports", tags=["reports"])
     app.include_router(reports.admin_router, prefix="/api/v1/admin/reports", tags=["admin"])
+    app.include_router(chat.admin_router, prefix="/api/v1/admin/chat", tags=["admin"])
     app.include_router(weather.router, prefix="/api/v1/weather", tags=["weather"])
 
     @app.get("/health")
