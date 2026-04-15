@@ -252,3 +252,205 @@ async def remove_participant(
             return event
 
     raise ValueError(t("event.not_registered", lang))
+
+
+# --- Seeding + Draw Generation ---
+
+import math
+import random
+
+from app.services.chat import create_event_chat_room
+
+
+def _seed_participants(participants: list[EventParticipant]) -> list[EventParticipant]:
+    """Sort participants by NTRP desc, credit_score desc, then random. Assign seed numbers."""
+    def sort_key(p):
+        return (-_ntrp_to_float(p.user.ntrp_level), -p.user.credit_score, random.random())
+
+    sorted_p = sorted(participants, key=sort_key)
+    for i, p in enumerate(sorted_p):
+        p.seed = i + 1
+    return sorted_p
+
+
+def _generate_elimination_draw(
+    seeded: list[EventParticipant],
+) -> list[dict]:
+    """Generate elimination bracket matches. Returns list of match dicts."""
+    n = len(seeded)
+    bracket_size = 2 ** math.ceil(math.log2(n))
+    total_rounds = int(math.log2(bracket_size))
+
+    # Place seeds into bracket positions
+    positions = [None] * bracket_size
+
+    if n >= 1:
+        positions[0] = seeded[0]
+    if n >= 2:
+        positions[bracket_size - 1] = seeded[1]
+    if n >= 3:
+        positions[bracket_size // 2] = seeded[2]
+    if n >= 4:
+        positions[bracket_size // 2 - 1] = seeded[3]
+
+    # Fill remaining seeds randomly into empty positions
+    remaining = seeded[4:] if n > 4 else []
+    empty_indices = [i for i, p in enumerate(positions) if p is None]
+    random.shuffle(empty_indices)
+
+    for i, p in enumerate(remaining):
+        positions[empty_indices[i]] = p
+
+    matches = []
+    # Generate round 1
+    for i in range(0, bracket_size, 2):
+        match_order = i // 2 + 1
+        player_a = positions[i]
+        player_b = positions[i + 1]
+
+        a_id = player_a.user_id if player_a else None
+        b_id = player_b.user_id if player_b else None
+
+        is_bye = a_id is None or b_id is None
+        winner = a_id or b_id if is_bye else None
+        bye_status = EventMatchStatus.CONFIRMED if is_bye else EventMatchStatus.PENDING
+
+        matches.append({
+            "round": 1,
+            "match_order": match_order,
+            "player_a_id": a_id,
+            "player_b_id": b_id,
+            "winner_id": winner,
+            "status": bye_status,
+        })
+
+    # Generate subsequent rounds (empty shells)
+    for r in range(2, total_rounds + 1):
+        matches_in_round = bracket_size // (2 ** r)
+        for m in range(1, matches_in_round + 1):
+            matches.append({
+                "round": r,
+                "match_order": m,
+                "player_a_id": None,
+                "player_b_id": None,
+                "winner_id": None,
+                "status": EventMatchStatus.PENDING,
+            })
+
+    return matches
+
+
+def _generate_round_robin_draw(seeded: list[EventParticipant]) -> list[dict]:
+    """Placeholder — implemented in Task 10."""
+    raise NotImplementedError("Round-robin draw not yet implemented")
+
+
+async def start_event(
+    session: AsyncSession,
+    event: Event,
+    lang: str = "en",
+) -> Event:
+    from app.i18n import t
+
+    if event.status != EventStatus.OPEN:
+        raise ValueError(t("event.cannot_modify", lang))
+
+    active_participants = [p for p in event.participants if p.status == EventParticipantStatus.REGISTERED]
+    is_elimination = event.event_type in (EventType.SINGLES_ELIMINATION, EventType.DOUBLES_ELIMINATION)
+    min_required = 4 if is_elimination else 3
+
+    if len(active_participants) < min_required:
+        raise ValueError(t("event.not_enough_participants", lang))
+
+    seeded = _seed_participants(active_participants)
+
+    if is_elimination:
+        match_dicts = _generate_elimination_draw(seeded)
+    else:
+        match_dicts = _generate_round_robin_draw(seeded)
+
+    for md in match_dicts:
+        match = EventMatch(
+            event_id=event.id,
+            round=md["round"],
+            match_order=md["match_order"],
+            player_a_id=md["player_a_id"],
+            player_b_id=md["player_b_id"],
+            winner_id=md.get("winner_id"),
+            group_name=md.get("group_name"),
+            status=md["status"],
+        )
+        session.add(match)
+
+    if is_elimination:
+        await session.flush()
+        await _advance_bye_winners(session, event)
+
+    for p in active_participants:
+        p.status = EventParticipantStatus.CONFIRMED
+
+    event.status = EventStatus.IN_PROGRESS
+    await session.flush()
+
+    participant_ids = [p.user_id for p in active_participants]
+    await create_event_chat_room(session, event=event, participant_ids=participant_ids)
+
+    for p in active_participants:
+        if p.user_id != event.creator_id:
+            await create_notification(
+                session,
+                recipient_id=p.user_id,
+                type=NotificationType.EVENT_STARTED,
+                actor_id=event.creator_id,
+                target_type="event",
+                target_id=event.id,
+            )
+
+    await session.commit()
+    event = await get_event_by_id(session, event.id)
+    return event
+
+
+async def _advance_bye_winners(session: AsyncSession, event: Event) -> None:
+    """For elimination: fill round 2 slots with BYE winners from round 1."""
+    result = await session.execute(
+        select(EventMatch)
+        .where(EventMatch.event_id == event.id)
+        .order_by(EventMatch.round, EventMatch.match_order)
+    )
+    all_matches = list(result.scalars().all())
+
+    round1 = [m for m in all_matches if m.round == 1]
+    round2 = [m for m in all_matches if m.round == 2]
+
+    for i, r2_match in enumerate(round2):
+        r1_a = round1[i * 2]
+        r1_b = round1[i * 2 + 1]
+
+        if r1_a.winner_id is not None:
+            r2_match.player_a_id = r1_a.winner_id
+        if r1_b.winner_id is not None:
+            r2_match.player_b_id = r1_b.winner_id
+
+    await session.flush()
+
+
+async def get_event_matches(
+    session: AsyncSession,
+    event_id: uuid.UUID,
+    *,
+    round: int | None = None,
+    group_name: str | None = None,
+) -> list[EventMatch]:
+    query = (
+        select(EventMatch)
+        .options(selectinload(EventMatch.sets))
+        .where(EventMatch.event_id == event_id)
+    )
+    if round is not None:
+        query = query.where(EventMatch.round == round)
+    if group_name is not None:
+        query = query.where(EventMatch.group_name == group_name)
+    query = query.order_by(EventMatch.round, EventMatch.match_order)
+    result = await session.execute(query)
+    return list(result.scalars().all())

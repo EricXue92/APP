@@ -19,11 +19,13 @@ from app.schemas.event import (
 from app.services.event import (
     create_event,
     get_event_by_id,
+    get_event_matches,
     join_event,
     list_events,
     list_my_events,
     publish_event,
     remove_participant,
+    start_event,
     update_event,
     withdraw_from_event,
 )
@@ -208,3 +210,36 @@ async def remove_event_participant(event_id: str, user_id: str, user: CurrentUse
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
     return _event_to_response(event, include_participants=True)
+
+
+@router.post("/{event_id}/start", response_model=EventDetailResponse)
+async def start_existing_event(event_id: str, user: CurrentUser, session: DbSession, lang: Lang):
+    event = await get_event_by_id(session, uuid.UUID(event_id))
+    if event is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=t("event.not_found", lang))
+    if event.creator_id != user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=t("event.not_creator", lang))
+
+    try:
+        event = await start_event(session, event, lang)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+    return _event_to_response(event, include_participants=True)
+
+
+@router.get("/{event_id}/matches", response_model=list[EventMatchResponse])
+async def get_matches(
+    event_id: str,
+    session: DbSession,
+    user: CurrentUser,
+    lang: Lang,
+    round: int | None = Query(default=None),
+    group: str | None = Query(default=None),
+):
+    event = await get_event_by_id(session, uuid.UUID(event_id))
+    if event is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=t("event.not_found", lang))
+
+    matches = await get_event_matches(session, event.id, round=round, group_name=group)
+    return matches

@@ -284,3 +284,83 @@ async def test_withdraw_from_event(client: AsyncClient, session: AsyncSession):
     )
     assert resp.status_code == 200
     assert resp.json()["participant_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_start_elimination_event(client: AsyncClient, session: AsyncSession):
+    """Start an elimination event with 5 players — should create bracket with BYEs."""
+    org_token, _ = await _register_and_get_token(client, "elim_org", ntrp="4.0")
+
+    resp = await client.post(
+        "/api/v1/events",
+        headers={"Authorization": f"Bearer {org_token}"},
+        json={
+            "name": "Elim Cup",
+            "event_type": "singles_elimination",
+            "min_ntrp": "3.0",
+            "max_ntrp": "4.5",
+            "max_participants": 8,
+            "registration_deadline": _future_deadline(),
+        },
+    )
+    event_id = resp.json()["id"]
+    await client.post(f"/api/v1/events/{event_id}/publish", headers={"Authorization": f"Bearer {org_token}"})
+
+    # Register 5 players
+    tokens = []
+    for i in range(5):
+        ntrp = f"{3.0 + i * 0.25:.1f}"
+        tk, _ = await _register_and_get_token(client, f"elim_p{i}", ntrp=ntrp)
+        tokens.append(tk)
+        await client.post(f"/api/v1/events/{event_id}/join", headers={"Authorization": f"Bearer {tk}"})
+
+    # Start the event
+    resp = await client.post(
+        f"/api/v1/events/{event_id}/start",
+        headers={"Authorization": f"Bearer {org_token}"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "in_progress"
+
+    # Check matches were generated
+    resp = await client.get(
+        f"/api/v1/events/{event_id}/matches",
+        headers={"Authorization": f"Bearer {org_token}"},
+    )
+    assert resp.status_code == 200
+    matches = resp.json()
+    # 5 players → 8 bracket → 4 first-round + 2 second-round + 1 final = 7 matches
+    assert len(matches) == 7
+    round1 = [m for m in matches if m["round"] == 1]
+    assert len(round1) == 4
+    byes = [m for m in round1 if m["player_a_id"] is None or m["player_b_id"] is None]
+    assert len(byes) == 3  # 8 - 5 = 3 BYEs
+
+
+@pytest.mark.asyncio
+async def test_start_event_not_enough_participants(client: AsyncClient, session: AsyncSession):
+    org_token, _ = await _register_and_get_token(client, "few_org")
+    player_token, _ = await _register_and_get_token(client, "few_p1")
+
+    resp = await client.post(
+        "/api/v1/events",
+        headers={"Authorization": f"Bearer {org_token}"},
+        json={
+            "name": "Few Cup",
+            "event_type": "singles_elimination",
+            "min_ntrp": "3.0",
+            "max_ntrp": "4.0",
+            "max_participants": 8,
+            "registration_deadline": _future_deadline(),
+        },
+    )
+    event_id = resp.json()["id"]
+    await client.post(f"/api/v1/events/{event_id}/publish", headers={"Authorization": f"Bearer {org_token}"})
+    await client.post(f"/api/v1/events/{event_id}/join", headers={"Authorization": f"Bearer {org_token}"})
+    await client.post(f"/api/v1/events/{event_id}/join", headers={"Authorization": f"Bearer {player_token}"})
+
+    resp = await client.post(
+        f"/api/v1/events/{event_id}/start",
+        headers={"Authorization": f"Bearer {org_token}"},
+    )
+    assert resp.status_code == 400
