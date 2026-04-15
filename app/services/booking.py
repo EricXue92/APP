@@ -20,6 +20,7 @@ from app.models.notification import NotificationType
 from app.models.user import Gender, User
 from app.services.credit import apply_credit_change
 from app.services.notification import create_notification
+from app.services.weather import check_free_cancel
 
 
 def _ntrp_to_float(level: str) -> float:
@@ -206,7 +207,23 @@ async def confirm_booking(session: AsyncSession, booking: Booking) -> Booking:
 async def cancel_booking(session: AsyncSession, booking: Booking, user: User) -> Booking:
     """Cancel a booking. If user is creator, cancels the whole booking. Otherwise cancels their participation."""
     play_dt = datetime.combine(booking.play_date, booking.start_time, tzinfo=timezone.utc)
-    cancel_reason = _get_cancel_reason(play_dt)
+
+    # Check if weather allows penalty-free cancellation
+    court = booking.court or await session.get(Court, booking.court_id)
+    weather_free = False
+    if court and court.latitude is not None and court.longitude is not None:
+        weather_free = await check_free_cancel(
+            lat=court.latitude,
+            lon=court.longitude,
+            play_date=booking.play_date,
+            start_time=booking.start_time,
+            court_id=booking.court_id,
+        )
+
+    if weather_free:
+        cancel_reason = CreditReason.WEATHER_CANCEL
+    else:
+        cancel_reason = _get_cancel_reason(play_dt)
 
     if user.id == booking.creator_id:
         booking.status = BookingStatus.CANCELLED

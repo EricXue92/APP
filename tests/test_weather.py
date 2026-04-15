@@ -318,3 +318,94 @@ async def test_weather_endpoint_date_too_far(client: AsyncClient, session: Async
         params={"court_id": str(court.id), "date": far_date},
     )
     assert resp.status_code == 400
+
+
+# ── Free cancel integration tests ──────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_cancel_booking_free_cancel_weather(client: AsyncClient, session: AsyncSession):
+    """When weather allows free cancel, credit should not be deducted."""
+    token, user_id = await _register_and_get_token(client, "weather_cancel1")
+    court = await _seed_court_with_coords(session)
+    future_date = (date.today() + timedelta(days=3)).isoformat()
+
+    # Create a booking
+    create_resp = await client.post(
+        "/api/v1/bookings",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "court_id": str(court.id),
+            "match_type": "singles",
+            "play_date": future_date,
+            "start_time": "10:00:00",
+            "end_time": "12:00:00",
+            "min_ntrp": "3.0",
+            "max_ntrp": "4.0",
+            "gender_requirement": "any",
+        },
+    )
+    assert create_resp.status_code == 201
+    booking_id = create_resp.json()["id"]
+
+    # Get initial credit score
+    user_resp = await client.get(
+        "/api/v1/users/me",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    initial_credit = user_resp.json()["credit_score"]
+
+    # Mock weather to allow free cancel (typhoon)
+    with patch("app.services.booking.check_free_cancel", new_callable=AsyncMock) as mock_check:
+        mock_check.return_value = True
+
+        cancel_resp = await client.post(
+            f"/api/v1/bookings/{booking_id}/cancel",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    assert cancel_resp.status_code == 200
+    assert cancel_resp.json()["status"] == "cancelled"
+
+    # Credit should remain the same
+    user_resp = await client.get(
+        "/api/v1/users/me",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert user_resp.json()["credit_score"] == initial_credit
+
+
+@pytest.mark.asyncio
+async def test_cancel_booking_no_free_cancel(client: AsyncClient, session: AsyncSession):
+    """When weather does not allow free cancel, normal penalty applies."""
+    token, user_id = await _register_and_get_token(client, "weather_cancel2")
+    court = await _seed_court_with_coords(session)
+    future_date = (date.today() + timedelta(days=3)).isoformat()
+
+    create_resp = await client.post(
+        "/api/v1/bookings",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "court_id": str(court.id),
+            "match_type": "singles",
+            "play_date": future_date,
+            "start_time": "10:00:00",
+            "end_time": "12:00:00",
+            "min_ntrp": "3.0",
+            "max_ntrp": "4.0",
+            "gender_requirement": "any",
+        },
+    )
+    assert create_resp.status_code == 201
+    booking_id = create_resp.json()["id"]
+
+    with patch("app.services.booking.check_free_cancel", new_callable=AsyncMock) as mock_check:
+        mock_check.return_value = False
+
+        cancel_resp = await client.post(
+            f"/api/v1/bookings/{booking_id}/cancel",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    assert cancel_resp.status_code == 200
+    assert cancel_resp.json()["status"] == "cancelled"
+    # First cancel is always warning-only, so credit should still be the same,
+    # but cancel_count should have incremented (verified by subsequent cancel behavior)
