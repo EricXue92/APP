@@ -815,3 +815,66 @@ async def test_block_expires_pending_proposals(client: AsyncClient, session: Asy
     )
     proposal = result.scalar_one()
     assert proposal.status.value == "expired"
+
+
+# --- Pure Helper Unit Tests (no DB) ---
+
+from datetime import time as _time
+from app.services.matching import _time_overlap_minutes, _compute_time_overlap_ratio, _haversine_km
+from app.models.matching import MatchTimeSlot
+
+
+def test_time_overlap_full():
+    """Identical ranges should return full duration."""
+    assert _time_overlap_minutes(_time(9, 0), _time(12, 0), _time(9, 0), _time(12, 0)) == 180
+
+
+def test_time_overlap_partial():
+    assert _time_overlap_minutes(_time(9, 0), _time(12, 0), _time(11, 0), _time(14, 0)) == 60
+
+
+def test_time_overlap_none():
+    assert _time_overlap_minutes(_time(9, 0), _time(12, 0), _time(14, 0), _time(17, 0)) == 0
+
+
+def test_time_overlap_adjacent():
+    """Touching ranges have 0 overlap."""
+    assert _time_overlap_minutes(_time(9, 0), _time(12, 0), _time(12, 0), _time(15, 0)) == 0
+
+
+def test_time_overlap_one_minute():
+    assert _time_overlap_minutes(_time(9, 0), _time(12, 0), _time(11, 59), _time(14, 0)) == 1
+
+
+def test_haversine_same_point():
+    assert _haversine_km(22.28, 114.17, 22.28, 114.17) == 0.0
+
+
+def test_haversine_known_distance():
+    """HK to Taipei is roughly 800km."""
+    dist = _haversine_km(22.28, 114.17, 25.03, 121.56)
+    assert 700 < dist < 900
+
+
+def test_haversine_short_distance():
+    """Two points ~1km apart."""
+    dist = _haversine_km(22.280, 114.170, 22.289, 114.170)
+    assert 0.5 < dist < 1.5
+
+
+def test_compute_time_overlap_ratio_full_overlap():
+    slot_a = MatchTimeSlot(day_of_week=1, start_time=_time(9, 0), end_time=_time(12, 0))
+    slot_b = MatchTimeSlot(day_of_week=1, start_time=_time(9, 0), end_time=_time(12, 0))
+    ratio = _compute_time_overlap_ratio([slot_a], [slot_b])
+    assert ratio == 1.0
+
+
+def test_compute_time_overlap_ratio_no_overlap():
+    slot_a = MatchTimeSlot(day_of_week=1, start_time=_time(9, 0), end_time=_time(12, 0))
+    slot_b = MatchTimeSlot(day_of_week=2, start_time=_time(9, 0), end_time=_time(12, 0))
+    ratio = _compute_time_overlap_ratio([slot_a], [slot_b])
+    assert ratio == 0.0
+
+
+def test_compute_time_overlap_ratio_empty_slots():
+    assert _compute_time_overlap_ratio([], []) == 0.0
