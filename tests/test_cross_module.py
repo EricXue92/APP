@@ -741,3 +741,173 @@ async def test_complete_booking_awards_credit_to_accepted_only(
     # uid3 (REJECTED) should NOT get credit — stays at 80
     profile3 = await client.get("/api/v1/users/me", headers=_auth(token3))
     assert profile3.json()["credit_score"] == 80, "Rejected participant should NOT get credit"
+
+
+# ---------------------------------------------------------------------------
+# Task 24: Review + Credit → Ideal Player cross-module tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_review_triggers_ideal_player_gained(client: AsyncClient, session: AsyncSession):
+    """User meeting all ideal conditions gains ideal status after review submission.
+
+    Setup: credit=90, cancel_count=0, 10 completed bookings, then submit review
+    pushing avg above 4.0 → user becomes ideal → GAINED notification exists.
+    """
+    from app.models.notification import Notification, NotificationType
+    from app.models.user import User as UserModel
+    from app.models.booking import BookingParticipant, ParticipantStatus, BookingStatus
+    from app.services.ideal_player import evaluate_ideal_status
+    from sqlalchemy import update
+
+    token_a, uid_a = await _register_and_get_token(client, "ideal_gain_a")
+    token_b, uid_b = await _register_and_get_token(client, "ideal_gain_b")
+    court = await _seed_court(session)
+
+    # Set user A to meet credit/cancel thresholds
+    await session.execute(
+        update(UserModel)
+        .where(UserModel.id == uuid.UUID(uid_a))
+        .values(credit_score=90, cancel_count=0)
+    )
+    await session.commit()
+
+    # Create 10 completed bookings for user A (simulate via DB)
+    for i in range(10):
+        booking = Booking(
+            creator_id=uuid.UUID(uid_a),
+            court_id=court.id,
+            match_type="singles",
+            play_date=date.today() - timedelta(days=10 + i),
+            start_time=time(10, 0),
+            end_time=time(12, 0),
+            min_ntrp="3.0",
+            max_ntrp="4.0",
+            max_participants=2,
+            status=BookingStatus.COMPLETED,
+        )
+        session.add(booking)
+        await session.flush()
+        participant = BookingParticipant(
+            booking_id=booking.id,
+            user_id=uuid.UUID(uid_a),
+            status=ParticipantStatus.ACCEPTED,
+        )
+        session.add(participant)
+    await session.commit()
+
+    # Submit a review of user A with high ratings (avg > 4.0)
+    # First create one completed booking via API so the review is valid
+    booking_id = await _create_completed_booking(
+        client, session, token_a, uid_b, token_b, str(court.id)
+    )
+    resp = await client.post(
+        "/api/v1/reviews",
+        headers=_auth(token_b),
+        json={
+            "booking_id": booking_id,
+            "reviewee_id": uid_a,
+            "skill_rating": 5,
+            "punctuality_rating": 5,
+            "sportsmanship_rating": 5,
+        },
+    )
+    assert resp.status_code == 201, f"Review failed: {resp.json()}"
+
+    # Evaluate ideal status
+    result = await evaluate_ideal_status(session, uuid.UUID(uid_a))
+    assert result is True, "User should now be ideal"
+
+    # Verify IDEAL_PLAYER_GAINED notification
+    notif_result = await session.execute(
+        select(Notification).where(
+            Notification.recipient_id == uuid.UUID(uid_a),
+            Notification.type == NotificationType.IDEAL_PLAYER_GAINED,
+        )
+    )
+    assert notif_result.scalar_one_or_none() is not None, "GAINED notification should exist"
+
+
+@pytest.mark.asyncio
+async def test_credit_drop_loses_ideal_status(client: AsyncClient, session: AsyncSession):
+    """An ideal user whose credit drops below 90 loses ideal status → LOST notification."""
+    from app.models.notification import Notification, NotificationType
+    from app.models.user import User as UserModel
+    from app.services.ideal_player import evaluate_ideal_status
+    from sqlalchemy import update
+
+    token_a, uid_a = await _register_and_get_token(client, "ideal_lose_a")
+
+    # Set user as ideal with credit=90
+    await session.execute(
+        update(UserModel)
+        .where(UserModel.id == uuid.UUID(uid_a))
+        .values(credit_score=90, cancel_count=0, is_ideal_player=True)
+    )
+    await session.commit()
+
+    # Drop credit below threshold
+    await session.execute(
+        update(UserModel)
+        .where(UserModel.id == uuid.UUID(uid_a))
+        .values(credit_score=89)
+    )
+    await session.commit()
+    session.expire_all()
+
+    # Evaluate — should lose ideal status
+    result = await evaluate_ideal_status(session, uuid.UUID(uid_a))
+    assert result is False, "User should lose ideal status when credit < 90"
+
+    # Verify IDEAL_PLAYER_LOST notification
+    notif_result = await session.execute(
+        select(Notification).where(
+            Notification.recipient_id == uuid.UUID(uid_a),
+            Notification.type == NotificationType.IDEAL_PLAYER_LOST,
+        )
+    )
+    assert notif_result.scalar_one_or_none() is not None, "LOST notification should exist"
+
+
+@pytest.mark.asyncio
+async def test_report_suspended_user_cannot_login(client: AsyncClient, session: AsyncSession):
+    """Admin resolves report as SUSPENDED → user can't log in."""
+    from app.models.user import User as UserModel, UserRole
+    from sqlalchemy import update
+
+    reporter_token, reporter_id = await _register_and_get_token(client, "rpt_sus_reporter")
+    target_token, target_id = await _register_and_get_token(client, "rpt_sus_target")
+    admin_token, admin_id = await _register_and_get_token(client, "rpt_sus_admin")
+
+    # Make admin
+    await session.execute(
+        update(UserModel)
+        .where(UserModel.id == uuid.UUID(admin_id))
+        .values(role=UserRole.ADMIN)
+    )
+    await session.commit()
+
+    # Reporter creates a report against target
+    resp = await client.post(
+        "/api/v1/reports",
+        json={"reported_user_id": target_id, "target_type": "user", "reason": "harassment"},
+        headers=_auth(reporter_token),
+    )
+    assert resp.status_code == 201
+    report_id = resp.json()["id"]
+
+    # Admin resolves as suspended
+    resp = await client.patch(
+        f"/api/v1/admin/reports/{report_id}/resolve",
+        json={"resolution": "suspended"},
+        headers=_auth(admin_token),
+    )
+    assert resp.status_code == 200
+
+    # Target tries to log in → 403
+    resp = await client.post(
+        "/api/v1/auth/login/username",
+        json={"username": "rpt_sus_target", "password": "pass1234"},
+    )
+    assert resp.status_code == 403, f"Suspended user login should return 403, got {resp.status_code}"
