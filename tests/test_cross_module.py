@@ -326,3 +326,107 @@ async def test_block_prevents_review_submission(client: AsyncClient, session: As
     assert resp.status_code in (400, 403), (
         f"Expected 400 or 403 when blocked user submits review, got {resp.status_code}: {resp.json()}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Test 4: Suspended user login rejected (username)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_suspended_user_login_rejected(client: AsyncClient, session: AsyncSession):
+    """Register, suspend via DB, then login → 403."""
+    from app.models.user import User as UserModel
+
+    token, uid = await _register_and_get_token(client, "susp_login")
+
+    # Suspend via DB
+    user = await session.get(UserModel, uuid.UUID(uid))
+    assert user is not None
+    user.is_suspended = True
+    await session.commit()
+
+    # Login attempt should be rejected with 403
+    resp = await client.post(
+        "/api/v1/auth/login/username",
+        json={"username": "susp_login", "password": "pass1234"},
+    )
+    assert resp.status_code == 403, (
+        f"Expected 403 for suspended user login, got {resp.status_code}: {resp.json()}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 5: Suspended user's token rejected
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_suspended_user_token_rejected(client: AsyncClient, session: AsyncSession):
+    """Register, get token, suspend via DB, call authenticated endpoint → 403."""
+    from app.models.user import User as UserModel
+
+    token, uid = await _register_and_get_token(client, "susp_token")
+
+    # Verify token works before suspension
+    resp = await client.get("/api/v1/users/me", headers=_auth(token))
+    assert resp.status_code == 200, f"Expected 200 before suspension, got {resp.status_code}"
+
+    # Suspend via DB
+    user = await session.get(UserModel, uuid.UUID(uid))
+    assert user is not None
+    user.is_suspended = True
+    await session.commit()
+    session.expire_all()
+
+    # Token should now be rejected with 403
+    resp = await client.get("/api/v1/users/me", headers=_auth(token))
+    assert resp.status_code == 403, (
+        f"Expected 403 for suspended user token, got {resp.status_code}: {resp.json()}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 6: Suspended proposer blocks acceptance
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_suspended_proposer_blocks_acceptance(client: AsyncClient, session: AsyncSession):
+    """Create proposal from A to B, suspend A, B tries to accept → 400."""
+    from app.models.user import User as UserModel
+
+    token_a, uid_a = await _register_and_get_token(client, "susp_prop_a")
+    token_b, uid_b = await _register_and_get_token(client, "susp_prop_b")
+    court = await _seed_court(session)
+
+    # Create a pending proposal directly in DB (A proposes to B)
+    play_date = date.today() + timedelta(days=3)
+    proposal = MatchProposal(
+        proposer_id=uuid.UUID(uid_a),
+        target_id=uuid.UUID(uid_b),
+        court_id=court.id,
+        match_type="singles",
+        play_date=play_date,
+        start_time=time(10, 0),
+        end_time=time(12, 0),
+        status=ProposalStatus.PENDING,
+    )
+    session.add(proposal)
+    await session.commit()
+    await session.refresh(proposal)
+    proposal_id = str(proposal.id)
+
+    # Suspend proposer A
+    user_a = await session.get(UserModel, uuid.UUID(uid_a))
+    assert user_a is not None
+    user_a.is_suspended = True
+    await session.commit()
+    session.expire_all()
+
+    # B tries to accept → should fail with 400 (proposer suspended)
+    resp = await client.patch(
+        f"/api/v1/matching/proposals/{proposal_id}",
+        headers=_auth(token_b),
+        json={"status": "accepted"},
+    )
+    assert resp.status_code == 400, (
+        f"Expected 400 when accepting proposal from suspended proposer, got {resp.status_code}: {resp.json()}"
+    )
