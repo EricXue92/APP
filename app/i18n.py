@@ -484,6 +484,11 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "zh-Hant": "該比賽已有結果",
         "en": "This match already has a result",
     },
+    "event.not_participant": {
+        "zh-Hans": "该用户不是赛事参与者",
+        "zh-Hant": "該用戶不是賽事參與者",
+        "en": "User is not a participant in this event",
+    },
     "admin.user_already_suspended": {
         "zh-Hant": "該用戶已被停權",
         "zh-Hans": "该用户已被停权",
