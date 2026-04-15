@@ -29,6 +29,17 @@ class NotificationType(str, enum.Enum):
     MATCH_PROPOSAL_REJECTED = "match_proposal_rejected"
     MATCH_SUGGESTION = "match_suggestion"
     NEW_CHAT_MESSAGE = "new_chat_message"
+    EVENT_REGISTRATION_OPEN = "event_registration_open"
+    EVENT_JOINED = "event_joined"
+    EVENT_STARTED = "event_started"
+    EVENT_MATCH_READY = "event_match_ready"
+    EVENT_SCORE_SUBMITTED = "event_score_submitted"
+    EVENT_SCORE_CONFIRMED = "event_score_confirmed"
+    EVENT_SCORE_DISPUTED = "event_score_disputed"
+    EVENT_WALKOVER = "event_walkover"
+    EVENT_ELIMINATED = "event_eliminated"
+    EVENT_COMPLETED = "event_completed"
+    EVENT_CANCELLED = "event_cancelled"
 
 
 class Notification(Base):

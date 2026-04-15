@@ -374,6 +374,116 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "zh-Hant": "訊息包含不當內容",
         "en": "Message contains inappropriate content",
     },
+    "event.not_found": {
+        "zh-Hans": "赛事未找到",
+        "zh-Hant": "賽事未找到",
+        "en": "Event not found",
+    },
+    "event.not_creator": {
+        "zh-Hans": "只有组织者才能执行此操作",
+        "zh-Hant": "只有組織者才能執行此操作",
+        "en": "Only the event organizer can perform this action",
+    },
+    "event.credit_too_low": {
+        "zh-Hans": "信用分不足，无法创建赛事",
+        "zh-Hant": "信用分不足，無法創建賽事",
+        "en": "Credit score too low to create an event",
+    },
+    "event.not_open": {
+        "zh-Hans": "赛事不在开放报名状态",
+        "zh-Hant": "賽事不在開放報名狀態",
+        "en": "Event is not open for registration",
+    },
+    "event.already_joined": {
+        "zh-Hans": "你已经报名了这个赛事",
+        "zh-Hant": "你已經報名了這個賽事",
+        "en": "You have already joined this event",
+    },
+    "event.full": {
+        "zh-Hans": "赛事报名人数已满",
+        "zh-Hant": "賽事報名人數已滿",
+        "en": "Event registration is full",
+    },
+    "event.ntrp_out_of_range": {
+        "zh-Hans": "你的水平不在赛事要求范围内",
+        "zh-Hant": "你的水平不在賽事要求範圍內",
+        "en": "Your NTRP level is outside the event's required range",
+    },
+    "event.gender_mismatch": {
+        "zh-Hans": "该赛事有性别要求",
+        "zh-Hant": "該賽事有性別要求",
+        "en": "This event has a gender requirement you don't meet",
+    },
+    "event.not_enough_participants": {
+        "zh-Hans": "参赛人数不足，无法开始",
+        "zh-Hant": "參賽人數不足，無法開始",
+        "en": "Not enough participants to start the event",
+    },
+    "event.already_started": {
+        "zh-Hans": "赛事已经开始",
+        "zh-Hant": "賽事已經開始",
+        "en": "Event has already started",
+    },
+    "event.not_in_progress": {
+        "zh-Hans": "赛事不在进行中",
+        "zh-Hant": "賽事不在進行中",
+        "en": "Event is not in progress",
+    },
+    "event.cannot_modify": {
+        "zh-Hans": "赛事当前状态不允许修改",
+        "zh-Hant": "賽事當前狀態不允許修改",
+        "en": "Event cannot be modified in its current status",
+    },
+    "event.match_not_found": {
+        "zh-Hans": "比赛未找到",
+        "zh-Hant": "比賽未找到",
+        "en": "Match not found",
+    },
+    "event.not_match_player": {
+        "zh-Hans": "你不是这场比赛的选手",
+        "zh-Hant": "你不是這場比賽的選手",
+        "en": "You are not a player in this match",
+    },
+    "event.match_not_ready": {
+        "zh-Hans": "比赛尚未就绪（等待对手）",
+        "zh-Hant": "比賽尚未就緒（等待對手）",
+        "en": "Match is not ready (waiting for opponent)",
+    },
+    "event.score_already_submitted": {
+        "zh-Hans": "比分已提交，等待确认",
+        "zh-Hant": "比分已提交，等待確認",
+        "en": "Score already submitted, awaiting confirmation",
+    },
+    "event.score_invalid": {
+        "zh-Hans": "比分不合法",
+        "zh-Hant": "比分不合法",
+        "en": "Invalid score",
+    },
+    "event.match_not_submitted": {
+        "zh-Hans": "比赛尚未提交比分",
+        "zh-Hant": "比賽尚未提交比分",
+        "en": "No score has been submitted for this match",
+    },
+    "event.cannot_confirm_own": {
+        "zh-Hans": "不能确认自己提交的比分",
+        "zh-Hant": "不能確認自己提交的比分",
+        "en": "Cannot confirm your own score submission",
+    },
+    "event.not_registered": {
+        "zh-Hans": "你未报名此赛事",
+        "zh-Hant": "你未報名此賽事",
+        "en": "You are not registered for this event",
+    },
+    "event.cannot_withdraw": {
+        "zh-Hans": "赛事已开始，无法退出",
+        "zh-Hant": "賽事已開始，無法退出",
+        "en": "Cannot withdraw after the event has started",
+    },
+    "event.walkover_already_decided": {
+        "zh-Hans": "该比赛已有结果",
+        "zh-Hant": "該比賽已有結果",
+        "en": "This match already has a result",
+    },
 }
 
 
