@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     anthropic_model: str = "claude-sonnet-4-20250514"
     assistant_rate_limit: int = 10  # per user per hour
 
+    # QWeather (天气)
+    qweather_api_key: str = ""
+    qweather_base_url: str = "https://devapi.qweather.com"
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 
