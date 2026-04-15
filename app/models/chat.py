@@ -29,6 +29,9 @@ class ChatRoom(Base):
     booking_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("bookings.id", ondelete="SET NULL"), unique=True, nullable=True
     )
+    event_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("events.id", ondelete="SET NULL"), unique=True, nullable=True
+    )
     name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     is_readonly: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

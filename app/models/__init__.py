@@ -9,10 +9,12 @@ from app.models.follow import Follow
 from app.models.notification import Notification
 from app.models.matching import MatchPreference, MatchTimeSlot, MatchPreferenceCourt, MatchProposal
 from app.models.chat import ChatRoom, ChatParticipant, Message
+from app.models.event import Event, EventParticipant, EventMatch, EventSet
 
 __all__ = [
     "User", "UserAuth", "CreditLog", "Court", "Booking", "BookingParticipant",
     "Review", "Block", "Report", "Follow", "Notification",
     "MatchPreference", "MatchTimeSlot", "MatchPreferenceCourt", "MatchProposal",
     "ChatRoom", "ChatParticipant", "Message",
+    "Event", "EventParticipant", "EventMatch", "EventSet",
 ]
