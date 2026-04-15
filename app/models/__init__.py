@@ -10,6 +10,7 @@ from app.models.notification import Notification
 from app.models.matching import MatchPreference, MatchTimeSlot, MatchPreferenceCourt, MatchProposal
 from app.models.chat import ChatRoom, ChatParticipant, Message
 from app.models.event import Event, EventParticipant, EventMatch, EventSet
+from app.models.admin import AdminAuditLog
 
 __all__ = [
     "User", "UserAuth", "CreditLog", "Court", "Booking", "BookingParticipant",
@@ -17,4 +18,5 @@ __all__ = [
     "MatchPreference", "MatchTimeSlot", "MatchPreferenceCourt", "MatchProposal",
     "ChatRoom", "ChatParticipant", "Message",
     "Event", "EventParticipant", "EventMatch", "EventSet",
+    "AdminAuditLog",
 ]
