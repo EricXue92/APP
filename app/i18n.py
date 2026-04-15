@@ -249,6 +249,61 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "zh-Hant": "AI 服務暫時不可用",
         "en": "AI service temporarily unavailable",
     },
+    "matching.preference_exists": {
+        "zh-Hans": "匹配偏好已存在",
+        "zh-Hant": "配對偏好已存在",
+        "en": "Match preference already exists",
+    },
+    "matching.preference_not_found": {
+        "zh-Hans": "匹配偏好未找到",
+        "zh-Hant": "配對偏好未找到",
+        "en": "Match preference not found",
+    },
+    "matching.preference_inactive": {
+        "zh-Hans": "匹配功能未激活",
+        "zh-Hant": "配對功能未啟用",
+        "en": "Matching is not active",
+    },
+    "matching.proposal_daily_cap": {
+        "zh-Hans": "今日发送配对请求已达上限",
+        "zh-Hant": "今日發送配對請求已達上限",
+        "en": "Daily proposal limit reached",
+    },
+    "matching.cannot_propose_self": {
+        "zh-Hans": "不能向自己发送配对请求",
+        "zh-Hant": "不能向自己發送配對請求",
+        "en": "Cannot send a proposal to yourself",
+    },
+    "matching.proposal_not_found": {
+        "zh-Hans": "配对请求未找到",
+        "zh-Hant": "配對請求未找到",
+        "en": "Proposal not found",
+    },
+    "matching.proposal_not_pending": {
+        "zh-Hans": "配对请求已处理",
+        "zh-Hant": "配對請求已處理",
+        "en": "Proposal is no longer pending",
+    },
+    "matching.proposal_not_target": {
+        "zh-Hans": "只有接收方才能回应",
+        "zh-Hant": "只有接收方才能回應",
+        "en": "Only the proposal target can respond",
+    },
+    "matching.duplicate_pending": {
+        "zh-Hans": "你已向该用户发送了配对请求",
+        "zh-Hant": "你已向該用戶發送了配對請求",
+        "en": "You already have a pending proposal to this user",
+    },
+    "matching.proposer_suspended": {
+        "zh-Hans": "对方账号已被停用",
+        "zh-Hant": "對方帳號已被停用",
+        "en": "Proposer's account has been suspended",
+    },
+    "matching.target_not_found": {
+        "zh-Hans": "目标用户不存在",
+        "zh-Hant": "目標用戶不存在",
+        "en": "Target user not found",
+    },
 }
 
 
