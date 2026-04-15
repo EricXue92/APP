@@ -479,6 +479,11 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "zh-Hant": "賽事已開始，無法退出",
         "en": "Cannot withdraw after the event has started",
     },
+    "event.already_cancelled": {
+        "zh-Hans": "赛事已被取消",
+        "zh-Hant": "賽事已被取消",
+        "en": "Event has already been cancelled",
+    },
     "event.walkover_already_decided": {
         "zh-Hans": "该比赛已有结果",
         "zh-Hant": "該比賽已有結果",

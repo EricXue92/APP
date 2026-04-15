@@ -245,7 +245,10 @@ async def cancel_existing_event(event_id: str, user: CurrentUser, session: DbSes
     if event.creator_id != user.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=t("event.not_creator", lang))
 
-    event = await cancel_event(session, event, lang)
+    try:
+        event = await cancel_event(session, event, lang)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     return _event_to_response(event, include_participants=True)
 
 

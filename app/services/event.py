@@ -1053,7 +1053,11 @@ async def cancel_event(
     event: Event,
     lang: str = "en",
 ) -> Event:
+    from app.i18n import t
     from app.services.chat import set_event_room_readonly
+
+    if event.status == EventStatus.CANCELLED:
+        raise ValueError(t("event.already_cancelled", lang))
 
     event.status = EventStatus.CANCELLED
 
