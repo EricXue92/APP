@@ -7,7 +7,7 @@ import uuid
 import firebase_admin
 from firebase_admin import credentials, messaging
 from redis.asyncio import Redis
-from sqlalchemy import select as sa_select
+from sqlalchemy import delete, select as sa_select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import settings
@@ -118,17 +118,14 @@ async def get_user_language(session: AsyncSession, user_id: uuid.UUID) -> str:
 
 
 async def remove_stale_tokens(session: AsyncSession, user_id: uuid.UUID, stale_tokens: list[str]) -> None:
-    for token_str in stale_tokens:
-        result = await session.execute(
-            sa_select(DeviceToken).where(
-                DeviceToken.user_id == user_id,
-                DeviceToken.token == token_str,
-            )
+    if not stale_tokens:
+        return
+    await session.execute(
+        delete(DeviceToken).where(
+            DeviceToken.user_id == user_id,
+            DeviceToken.token.in_(stale_tokens),
         )
-        dt = result.scalar_one_or_none()
-        if dt:
-            await session.delete(dt)
-    await session.flush()
+    )
 
 
 async def process_push_job(session_factory: async_sessionmaker, job_data: dict) -> None:
