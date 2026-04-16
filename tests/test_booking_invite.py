@@ -159,3 +159,187 @@ async def test_create_invite_low_credit(client: AsyncClient, session: AsyncSessi
         json=_invite_body(user_b, str(court.id)),
     )
     assert resp.status_code == 403
+
+
+# --- Accept invite tests ---
+
+
+@pytest.mark.asyncio
+async def test_accept_invite(client: AsyncClient, session: AsyncSession):
+    token_a, user_a = await _register_and_get_token(client, "inv_acc_a")
+    token_b, user_b = await _register_and_get_token(client, "inv_acc_b")
+    court = await _seed_court(session)
+
+    # Create invite
+    resp = await client.post(
+        "/api/v1/bookings/invites",
+        headers=_auth(token_a),
+        json=_invite_body(user_b, str(court.id)),
+    )
+    invite_id = resp.json()["id"]
+
+    # Accept
+    resp = await client.post(
+        f"/api/v1/bookings/invites/{invite_id}/accept",
+        headers=_auth(token_b),
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "accepted"
+    assert data["booking_id"] is not None
+
+    # Verify booking was created and confirmed
+    booking_resp = await client.get(
+        f"/api/v1/bookings/{data['booking_id']}",
+        headers=_auth(token_a),
+    )
+    assert booking_resp.status_code == 200
+    assert booking_resp.json()["status"] == "confirmed"
+    assert len(booking_resp.json()["participants"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_accept_invite_not_invitee(client: AsyncClient, session: AsyncSession):
+    token_a, _ = await _register_and_get_token(client, "inv_notinv_a")
+    _, user_b = await _register_and_get_token(client, "inv_notinv_b")
+    token_c, _ = await _register_and_get_token(client, "inv_notinv_c")
+    court = await _seed_court(session)
+
+    resp = await client.post(
+        "/api/v1/bookings/invites",
+        headers=_auth(token_a),
+        json=_invite_body(user_b, str(court.id)),
+    )
+    invite_id = resp.json()["id"]
+
+    # C tries to accept
+    resp = await client.post(
+        f"/api/v1/bookings/invites/{invite_id}/accept",
+        headers=_auth(token_c),
+    )
+    assert resp.status_code == 403
+
+
+# --- Reject invite tests ---
+
+
+@pytest.mark.asyncio
+async def test_reject_invite(client: AsyncClient, session: AsyncSession):
+    token_a, _ = await _register_and_get_token(client, "inv_rej_a")
+    token_b, user_b = await _register_and_get_token(client, "inv_rej_b")
+    court = await _seed_court(session)
+
+    resp = await client.post(
+        "/api/v1/bookings/invites",
+        headers=_auth(token_a),
+        json=_invite_body(user_b, str(court.id)),
+    )
+    invite_id = resp.json()["id"]
+
+    resp = await client.post(
+        f"/api/v1/bookings/invites/{invite_id}/reject",
+        headers=_auth(token_b),
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "rejected"
+
+
+@pytest.mark.asyncio
+async def test_accept_already_rejected(client: AsyncClient, session: AsyncSession):
+    token_a, _ = await _register_and_get_token(client, "inv_rejed_a")
+    token_b, user_b = await _register_and_get_token(client, "inv_rejed_b")
+    court = await _seed_court(session)
+
+    resp = await client.post(
+        "/api/v1/bookings/invites",
+        headers=_auth(token_a),
+        json=_invite_body(user_b, str(court.id)),
+    )
+    invite_id = resp.json()["id"]
+
+    # Reject first
+    await client.post(f"/api/v1/bookings/invites/{invite_id}/reject", headers=_auth(token_b))
+
+    # Try to accept
+    resp = await client.post(
+        f"/api/v1/bookings/invites/{invite_id}/accept",
+        headers=_auth(token_b),
+    )
+    assert resp.status_code == 400
+
+
+# --- List & detail tests ---
+
+
+@pytest.mark.asyncio
+async def test_list_sent_invites(client: AsyncClient, session: AsyncSession):
+    token_a, _ = await _register_and_get_token(client, "inv_ls_a")
+    _, user_b = await _register_and_get_token(client, "inv_ls_b")
+    court = await _seed_court(session)
+
+    await client.post(
+        "/api/v1/bookings/invites",
+        headers=_auth(token_a),
+        json=_invite_body(user_b, str(court.id)),
+    )
+
+    resp = await client.get("/api/v1/bookings/invites/sent", headers=_auth(token_a))
+    assert resp.status_code == 200
+    assert len(resp.json()) == 1
+
+
+@pytest.mark.asyncio
+async def test_list_received_invites(client: AsyncClient, session: AsyncSession):
+    token_a, _ = await _register_and_get_token(client, "inv_lr_a")
+    token_b, user_b = await _register_and_get_token(client, "inv_lr_b")
+    court = await _seed_court(session)
+
+    await client.post(
+        "/api/v1/bookings/invites",
+        headers=_auth(token_a),
+        json=_invite_body(user_b, str(court.id)),
+    )
+
+    resp = await client.get("/api/v1/bookings/invites/received", headers=_auth(token_b))
+    assert resp.status_code == 200
+    assert len(resp.json()) == 1
+
+
+@pytest.mark.asyncio
+async def test_get_invite_detail(client: AsyncClient, session: AsyncSession):
+    token_a, user_a = await _register_and_get_token(client, "inv_det_a")
+    token_b, user_b = await _register_and_get_token(client, "inv_det_b")
+    court = await _seed_court(session)
+
+    resp = await client.post(
+        "/api/v1/bookings/invites",
+        headers=_auth(token_a),
+        json=_invite_body(user_b, str(court.id)),
+    )
+    invite_id = resp.json()["id"]
+
+    # Both parties can see detail
+    resp_a = await client.get(f"/api/v1/bookings/invites/{invite_id}", headers=_auth(token_a))
+    assert resp_a.status_code == 200
+
+    resp_b = await client.get(f"/api/v1/bookings/invites/{invite_id}", headers=_auth(token_b))
+    assert resp_b.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_get_invite_detail_forbidden(client: AsyncClient, session: AsyncSession):
+    token_a, _ = await _register_and_get_token(client, "inv_forb_a")
+    _, user_b = await _register_and_get_token(client, "inv_forb_b")
+    token_c, _ = await _register_and_get_token(client, "inv_forb_c")
+    court = await _seed_court(session)
+
+    resp = await client.post(
+        "/api/v1/bookings/invites",
+        headers=_auth(token_a),
+        json=_invite_body(user_b, str(court.id)),
+    )
+    invite_id = resp.json()["id"]
+
+    # C cannot see
+    resp_c = await client.get(f"/api/v1/bookings/invites/{invite_id}", headers=_auth(token_c))
+    assert resp_c.status_code == 403
