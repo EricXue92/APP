@@ -40,6 +40,9 @@ class NotificationType(str, enum.Enum):
     EVENT_ELIMINATED = "event_eliminated"
     EVENT_COMPLETED = "event_completed"
     EVENT_CANCELLED = "event_cancelled"
+    BOOKING_INVITE_RECEIVED = "booking_invite_received"
+    BOOKING_INVITE_ACCEPTED = "booking_invite_accepted"
+    BOOKING_INVITE_REJECTED = "booking_invite_rejected"
 
 
 class Notification(Base):

@@ -12,6 +12,7 @@ from app.models.chat import ChatRoom, ChatParticipant, Message
 from app.models.event import Event, EventParticipant, EventMatch, EventSet
 from app.models.admin import AdminAuditLog
 from app.models.device_token import DeviceToken
+from app.models.booking_invite import BookingInvite
 
 __all__ = [
     "User", "UserAuth", "CreditLog", "Court", "Booking", "BookingParticipant",
@@ -19,5 +20,5 @@ __all__ = [
     "MatchPreference", "MatchTimeSlot", "MatchPreferenceCourt", "MatchProposal",
     "ChatRoom", "ChatParticipant", "Message",
     "Event", "EventParticipant", "EventMatch", "EventSet",
-    "AdminAuditLog", "DeviceToken",
+    "AdminAuditLog", "DeviceToken", "BookingInvite",
 ]
