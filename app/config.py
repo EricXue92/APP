@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     qweather_api_key: str = ""
     qweather_base_url: str = "https://devapi.qweather.com"
 
+    # Push notifications (FCM)
+    firebase_credentials_path: str = ""
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 
