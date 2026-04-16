@@ -610,6 +610,51 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "zh-Hans": "您收到一条新消息",
         "en": "You have a new message",
     },
+    "invite.not_found": {
+        "zh-Hans": "邀请未找到",
+        "zh-Hant": "邀請未找到",
+        "en": "Invite not found",
+    },
+    "invite.not_pending": {
+        "zh-Hans": "邀请已处理",
+        "zh-Hant": "邀請已處理",
+        "en": "Invite is no longer pending",
+    },
+    "invite.cannot_invite_self": {
+        "zh-Hans": "不能邀请自己",
+        "zh-Hant": "不能邀請自己",
+        "en": "Cannot invite yourself",
+    },
+    "invite.duplicate_pending": {
+        "zh-Hans": "你已向该用户发送了邀请",
+        "zh-Hant": "你已向該用戶發送了邀請",
+        "en": "You already have a pending invite to this user",
+    },
+    "invite.invitee_not_found": {
+        "zh-Hans": "被邀请人不存在",
+        "zh-Hant": "被邀請人不存在",
+        "en": "Invitee not found",
+    },
+    "invite.not_invitee": {
+        "zh-Hans": "只有被邀请人才能回应",
+        "zh-Hant": "只有被邀請人才能回應",
+        "en": "Only the invitee can respond",
+    },
+    "invite.not_participant": {
+        "zh-Hans": "你不是该邀请的参与方",
+        "zh-Hant": "你不是該邀請的參與方",
+        "en": "You are not a participant of this invite",
+    },
+    "push.booking_invite_received.title": {
+        "zh-Hant": "收到約球邀請",
+        "zh-Hans": "收到约球邀请",
+        "en": "Booking Invite Received",
+    },
+    "push.booking_invite_received.body": {
+        "zh-Hant": "有人邀請您一起打球",
+        "zh-Hans": "有人邀请您一起打球",
+        "en": "Someone invited you to play tennis",
+    },
 }
 
 
