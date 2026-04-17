@@ -454,3 +454,135 @@ async def test_block_unblock_reblock(client: AsyncClient, session: AsyncSession)
     # Re-block — should succeed, no unique constraint violation
     resp = await client.post("/api/v1/blocks", json={"blocked_id": uid2}, headers=_auth(token1))
     assert resp.status_code == 201
+
+
+# --- Edge Case: Block → reviews hidden → unblock → reviews stay hidden ---
+
+@pytest.mark.asyncio
+async def test_block_hides_reviews_permanently(client: AsyncClient, session: AsyncSession):
+    """Reviews hidden by a block should remain hidden after unblock."""
+    from app.models.review import Review
+    from app.models.booking import Booking, BookingParticipant, BookingStatus, ParticipantStatus
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    token1, uid1 = await _register_and_get_token(client, "bhperm_a")
+    token2, uid2 = await _register_and_get_token(client, "bhperm_b")
+    court = await _seed_court(session)
+
+    # Create a completed booking and mutual reviews
+    from datetime import timedelta
+    resp = await client.post(
+        "/api/v1/bookings",
+        headers=_auth(token1),
+        json={
+            "court_id": str(court.id),
+            "match_type": "singles",
+            "play_date": str(date.today() + timedelta(days=7)),
+            "start_time": "10:00:00",
+            "end_time": "12:00:00",
+            "min_ntrp": "3.0",
+            "max_ntrp": "4.0",
+        },
+    )
+    booking_id = resp.json()["id"]
+
+    await client.post(f"/api/v1/bookings/{booking_id}/join", headers=_auth(token2))
+    detail = (await client.get(f"/api/v1/bookings/{booking_id}")).json()
+    joiner_id = [p["user_id"] for p in detail["participants"] if p["status"] == "pending"][0]
+    await client.patch(
+        f"/api/v1/bookings/{booking_id}/participants/{joiner_id}",
+        headers=_auth(token1),
+        json={"status": "accepted"},
+    )
+    await client.post(f"/api/v1/bookings/{booking_id}/confirm", headers=_auth(token1))
+
+    from sqlalchemy import update as sa_update
+    from app.models.booking import Booking as BM
+    await session.execute(
+        sa_update(BM).where(BM.id == uuid.UUID(booking_id)).values(play_date=date.today() - timedelta(days=1))
+    )
+    await session.commit()
+    await client.post(f"/api/v1/bookings/{booking_id}/complete", headers=_auth(token1))
+
+    # Both review each other
+    for reviewer_tok, reviewee_id in [(token1, uid2), (token2, uid1)]:
+        await client.post(
+            "/api/v1/reviews",
+            headers=_auth(reviewer_tok),
+            json={
+                "booking_id": booking_id,
+                "reviewee_id": reviewee_id,
+                "skill_rating": 4,
+                "punctuality_rating": 4,
+                "sportsmanship_rating": 4,
+            },
+        )
+
+    # Verify reviews are visible (revealed)
+    resp = await client.get(f"/api/v1/reviews/users/{uid1}")
+    assert resp.json()["total_reviews"] == 1
+
+    # Block: should hide mutual reviews
+    await client.post("/api/v1/blocks", json={"blocked_id": uid2}, headers=_auth(token1))
+
+    # Reviews should now be hidden
+    from sqlalchemy import select, and_, or_
+    result = await session.execute(
+        select(Review).where(
+            or_(
+                and_(Review.reviewer_id == uuid.UUID(uid1), Review.reviewee_id == uuid.UUID(uid2)),
+                and_(Review.reviewer_id == uuid.UUID(uid2), Review.reviewee_id == uuid.UUID(uid1)),
+            )
+        )
+    )
+    reviews = list(result.scalars().all())
+    assert all(r.is_hidden for r in reviews), "All mutual reviews should be hidden after block"
+
+    # Unblock
+    await client.delete(f"/api/v1/blocks/{uid2}", headers=_auth(token1))
+
+    # Reviews should STILL be hidden (permanence)
+    for r in reviews:
+        await session.refresh(r)
+    assert all(r.is_hidden for r in reviews), "Reviews should remain hidden after unblock"
+
+
+# --- Edge Case: Block with pending booking invite ---
+
+@pytest.mark.asyncio
+async def test_block_does_not_crash_with_pending_invite(client: AsyncClient, session: AsyncSession):
+    """Blocking someone with a pending invite should not cause errors."""
+    token1, uid1 = await _register_and_get_token(client, "blkinv_a")
+    token2, uid2 = await _register_and_get_token(client, "blkinv_b")
+    court = await _seed_court(session)
+
+    # Create an invite from A to B
+    from datetime import timedelta
+    resp = await client.post(
+        "/api/v1/bookings/invites",
+        headers=_auth(token1),
+        json={
+            "invitee_id": uid2,
+            "court_id": str(court.id),
+            "match_type": "singles",
+            "play_date": str(date.today() + timedelta(days=3)),
+            "start_time": "14:00:00",
+            "end_time": "16:00:00",
+        },
+    )
+    assert resp.status_code == 201
+
+    # A blocks B — should succeed without crashing
+    resp = await client.post("/api/v1/blocks", json={"blocked_id": uid2}, headers=_auth(token1))
+    assert resp.status_code == 201
+
+
+# --- Edge Case: Block nonexistent user ---
+
+@pytest.mark.asyncio
+async def test_block_nonexistent_user(client: AsyncClient, session: AsyncSession):
+    token1, _ = await _register_and_get_token(client, "blk_nouser")
+    fake_id = str(uuid.uuid4())
+
+    resp = await client.post("/api/v1/blocks", json={"blocked_id": fake_id}, headers=_auth(token1))
+    assert resp.status_code == 400

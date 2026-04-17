@@ -166,7 +166,27 @@ async def join_existing_booking(booking_id: str, user: CurrentUser, session: DbS
     if accepted_count >= booking.max_participants:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=t("booking.full", lang))
 
-    await join_booking(session, booking, user)
+    # Handle re-join: if user has a cancelled participation, reset it instead of creating new row
+    existing_cancelled = next(
+        (p for p in booking.participants if p.user_id == user.id and p.status == ParticipantStatus.CANCELLED),
+        None,
+    )
+    if existing_cancelled:
+        existing_cancelled.status = ParticipantStatus.PENDING
+        from app.models.notification import NotificationType
+        from app.services.notification import create_notification
+        await create_notification(
+            session,
+            recipient_id=booking.creator_id,
+            type=NotificationType.BOOKING_JOINED,
+            actor_id=user.id,
+            target_type="booking",
+            target_id=booking.id,
+        )
+        await session.commit()
+    else:
+        await join_booking(session, booking, user)
+
     booking = await get_booking_by_id(session, booking.id)
     return _booking_to_detail(booking)
 

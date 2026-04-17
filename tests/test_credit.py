@@ -162,3 +162,42 @@ async def test_credit_history_custom_limit(session):
         await apply_credit_change(session, user, CreditReason.ATTENDED)
     logs = await get_credit_history(session, user.id, limit=3)
     assert len(logs) == 3
+
+
+# --- Edge Case: Multiple attends capped at 100 ---
+
+@pytest.mark.asyncio
+async def test_attend_many_times_capped_at_100(session):
+    """Attending many times should cap credit at 100, never exceed."""
+    user = await _create_test_user(session, "manycap")
+    for _ in range(10):
+        user = await apply_credit_change(session, user, CreditReason.ATTENDED)
+    assert user.credit_score == 100
+
+
+# --- Edge Case: Heavy penalty from low score stays at 0 ---
+
+@pytest.mark.asyncio
+async def test_multiple_noshow_floors_at_zero(session):
+    """Multiple no-shows from a low score should stay at 0, not go negative."""
+    user = await _create_test_user(session, "multinoshow")
+    user.credit_score = 3
+    user.cancel_count = 1
+    await session.commit()
+    user = await apply_credit_change(session, user, CreditReason.NO_SHOW)
+    assert user.credit_score == 0
+    user = await apply_credit_change(session, user, CreditReason.NO_SHOW)
+    assert user.credit_score == 0
+
+
+# --- Edge Case: First cancel for each cancel type is warning ---
+
+@pytest.mark.asyncio
+async def test_first_cancel_warning_regardless_of_tier(session):
+    """First cancel is always a warning, regardless of the cancel tier."""
+    user = await _create_test_user(session, "firsttier")
+    assert user.cancel_count == 0
+    # Even a harsh CANCEL_2H is forgiven on first cancel
+    user = await apply_credit_change(session, user, CreditReason.CANCEL_2H)
+    assert user.credit_score == 80
+    assert user.cancel_count == 1

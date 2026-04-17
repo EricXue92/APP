@@ -2,6 +2,7 @@ from typing import AsyncGenerator
 
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.database import Base, get_session
@@ -17,6 +18,12 @@ async def session() -> AsyncGenerator[AsyncSession, None]:
     async_session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
     async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+        await conn.execute(text(
+            "DO $$ DECLARE r RECORD; "
+            "BEGIN FOR r IN (SELECT typname FROM pg_type WHERE typtype = 'e' AND typnamespace = 'public'::regnamespace) "
+            "LOOP EXECUTE 'DROP TYPE IF EXISTS ' || quote_ident(r.typname) || ' CASCADE'; END LOOP; END $$;"
+        ))
         await conn.run_sync(Base.metadata.create_all)
 
     async with async_session_factory() as s:
@@ -24,6 +31,11 @@ async def session() -> AsyncGenerator[AsyncSession, None]:
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
+        await conn.execute(text(
+            "DO $$ DECLARE r RECORD; "
+            "BEGIN FOR r IN (SELECT typname FROM pg_type WHERE typtype = 'e' AND typnamespace = 'public'::regnamespace) "
+            "LOOP EXECUTE 'DROP TYPE IF EXISTS ' || quote_ident(r.typname) || ' CASCADE'; END LOOP; END $$;"
+        ))
 
     await engine.dispose()
 

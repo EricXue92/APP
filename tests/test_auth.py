@@ -168,3 +168,91 @@ async def test_suspended_user_token_rejected(client: AsyncClient, session: Async
 
     resp = await client.get("/api/v1/users/me", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 403
+
+
+# --- Edge Case: No auth header ---
+
+@pytest.mark.asyncio
+async def test_no_auth_header(client: AsyncClient):
+    resp = await client.get("/api/v1/users/me")
+    assert resp.status_code == 422 or resp.status_code == 401
+
+
+# --- Edge Case: Malformed auth header ---
+
+@pytest.mark.asyncio
+async def test_malformed_auth_header(client: AsyncClient):
+    resp = await client.get("/api/v1/users/me", headers={"Authorization": "NotBearer xyz"})
+    assert resp.status_code == 401
+
+
+# --- Edge Case: Expired token ---
+
+@pytest.mark.asyncio
+async def test_expired_token(client: AsyncClient):
+    """A token with a past expiry should be rejected."""
+    from app.services.auth import create_access_token
+    import jwt
+    from datetime import datetime, timezone, timedelta
+    from app.config import settings
+
+    # Create a token that expired 1 hour ago by crafting manually
+    payload = {
+        "sub": "00000000-0000-0000-0000-000000000001",
+        "type": "access",
+        "exp": datetime.now(timezone.utc) - timedelta(hours=1),
+    }
+    expired_token = jwt.encode(payload, settings.jwt_secret_key, algorithm="HS256")
+
+    resp = await client.get("/api/v1/users/me", headers={"Authorization": f"Bearer {expired_token}"})
+    assert resp.status_code == 401
+
+
+# --- Edge Case: Suspended user trying to create booking ---
+
+@pytest.mark.asyncio
+async def test_suspended_user_cannot_create_booking(client: AsyncClient, session: AsyncSession):
+    """Suspended user should be blocked from creating bookings (403)."""
+    resp = await client.post(
+        "/api/v1/auth/register/username",
+        params={"nickname": "SusBk", "gender": "male", "city": "HK", "ntrp_level": "3.5", "language": "en"},
+        json={"username": "susbk", "password": "pass1234", "email": "susbk@test.com"},
+    )
+    token = resp.json()["access_token"]
+    user_id = resp.json()["user_id"]
+
+    from app.models.user import User
+    import uuid
+    user = await session.get(User, uuid.UUID(user_id))
+    user.is_suspended = True
+    await session.commit()
+
+    from app.models.court import Court, CourtType
+    court = Court(name="SusCourt", address="Addr", city="HK", court_type=CourtType.OUTDOOR, is_approved=True)
+    session.add(court)
+    await session.commit()
+    await session.refresh(court)
+
+    from datetime import date, timedelta
+    resp = await client.post(
+        "/api/v1/bookings",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "court_id": str(court.id),
+            "match_type": "singles",
+            "play_date": (date.today() + timedelta(days=7)).isoformat(),
+            "start_time": "10:00:00",
+            "end_time": "12:00:00",
+            "min_ntrp": "3.0",
+            "max_ntrp": "4.0",
+        },
+    )
+    assert resp.status_code == 403
+
+
+# --- Edge Case: Login nonexistent user ---
+
+@pytest.mark.asyncio
+async def test_login_nonexistent_user(client: AsyncClient):
+    resp = await client.post("/api/v1/auth/login/username", json={"username": "ghost", "password": "pass1234"})
+    assert resp.status_code == 401

@@ -343,3 +343,159 @@ async def test_get_invite_detail_forbidden(client: AsyncClient, session: AsyncSe
     # C cannot see
     resp_c = await client.get(f"/api/v1/bookings/invites/{invite_id}", headers=_auth(token_c))
     assert resp_c.status_code == 403
+
+
+# --- Edge Case: Accept expired invite ---
+
+@pytest.mark.asyncio
+async def test_accept_expired_invite(client: AsyncClient, session: AsyncSession):
+    """Accepting an invite whose play_date has passed should fail."""
+    token_a, _ = await _register_and_get_token(client, "inv_exp_a")
+    token_b, user_b = await _register_and_get_token(client, "inv_exp_b")
+    court = await _seed_court(session)
+
+    # Create invite with past play_date by patching after creation
+    resp = await client.post(
+        "/api/v1/bookings/invites",
+        headers=_auth(token_a),
+        json=_invite_body(user_b, str(court.id)),
+    )
+    assert resp.status_code == 201
+    invite_id = resp.json()["id"]
+
+    # Backdate the play_date to yesterday
+    from sqlalchemy import update
+    from app.models.booking_invite import BookingInvite
+    await session.execute(
+        update(BookingInvite)
+        .where(BookingInvite.id == uuid.UUID(invite_id))
+        .values(play_date=date.today() - timedelta(days=1))
+    )
+    await session.commit()
+
+    # Try to accept — should fail because invite is now expired
+    resp = await client.post(
+        f"/api/v1/bookings/invites/{invite_id}/accept",
+        headers=_auth(token_b),
+    )
+    assert resp.status_code == 400
+
+
+# --- Edge Case: New invite after rejected one ---
+
+@pytest.mark.asyncio
+async def test_new_invite_after_rejection(client: AsyncClient, session: AsyncSession):
+    """After rejecting an invite, the inviter can send a new one."""
+    token_a, _ = await _register_and_get_token(client, "inv_rerej_a")
+    token_b, user_b = await _register_and_get_token(client, "inv_rerej_b")
+    court = await _seed_court(session)
+
+    # First invite
+    resp = await client.post(
+        "/api/v1/bookings/invites",
+        headers=_auth(token_a),
+        json=_invite_body(user_b, str(court.id)),
+    )
+    assert resp.status_code == 201
+    invite_id = resp.json()["id"]
+
+    # Reject it
+    resp = await client.post(f"/api/v1/bookings/invites/{invite_id}/reject", headers=_auth(token_b))
+    assert resp.status_code == 200
+
+    # Send a new invite — should succeed (previous one is not pending anymore)
+    resp = await client.post(
+        "/api/v1/bookings/invites",
+        headers=_auth(token_a),
+        json=_invite_body(user_b, str(court.id)),
+    )
+    assert resp.status_code == 201
+
+
+# --- Edge Case: Accept creates booking and chat room ---
+
+@pytest.mark.asyncio
+async def test_accept_invite_creates_booking_and_room(client: AsyncClient, session: AsyncSession):
+    """Accepting an invite should create a confirmed booking with a chat room."""
+    from sqlalchemy import select
+    from app.models.booking import Booking, BookingStatus
+    from app.models.chat import ChatRoom
+
+    token_a, user_a = await _register_and_get_token(client, "inv_accbk_a")
+    token_b, user_b = await _register_and_get_token(client, "inv_accbk_b")
+    court = await _seed_court(session)
+
+    resp = await client.post(
+        "/api/v1/bookings/invites",
+        headers=_auth(token_a),
+        json=_invite_body(user_b, str(court.id)),
+    )
+    invite_id = resp.json()["id"]
+
+    resp = await client.post(f"/api/v1/bookings/invites/{invite_id}/accept", headers=_auth(token_b))
+    assert resp.status_code == 200
+    invite_data = resp.json()
+    assert invite_data["status"] == "accepted"
+    booking_id = invite_data.get("booking_id")
+    assert booking_id is not None
+
+    # Verify booking exists and is confirmed
+    result = await session.execute(
+        select(Booking).where(Booking.id == uuid.UUID(booking_id))
+    )
+    booking = result.scalar_one()
+    assert booking.status == BookingStatus.CONFIRMED
+
+    # Verify chat room exists
+    result = await session.execute(
+        select(ChatRoom).where(ChatRoom.booking_id == uuid.UUID(booking_id))
+    )
+    room = result.scalar_one_or_none()
+    assert room is not None
+
+
+# --- Edge Case: Invite suspended invitee ---
+
+@pytest.mark.asyncio
+async def test_invite_suspended_user(client: AsyncClient, session: AsyncSession):
+    """Inviting a suspended user should not crash; invite is created but invitee can't act on it."""
+    from sqlalchemy import update as sa_update
+    from app.models.user import User
+
+    token_a, _ = await _register_and_get_token(client, "inv_susp_a")
+    token_b, user_b = await _register_and_get_token(client, "inv_susp_b")
+    court = await _seed_court(session)
+
+    # Suspend user_b
+    await session.execute(
+        sa_update(User).where(User.id == uuid.UUID(user_b)).values(is_suspended=True)
+    )
+    await session.commit()
+
+    # Creating the invite should still succeed (service doesn't check suspension)
+    resp = await client.post(
+        "/api/v1/bookings/invites",
+        headers=_auth(token_a),
+        json=_invite_body(user_b, str(court.id)),
+    )
+    assert resp.status_code == 201
+
+    invite_id = resp.json()["id"]
+
+    # Suspended user cannot accept (403 from auth middleware)
+    resp = await client.post(
+        f"/api/v1/bookings/invites/{invite_id}/accept",
+        headers=_auth(token_b),
+    )
+    assert resp.status_code == 403
+
+
+# --- Edge Case: Get non-existent invite ---
+
+@pytest.mark.asyncio
+async def test_get_nonexistent_invite(client: AsyncClient, session: AsyncSession):
+    token_a, _ = await _register_and_get_token(client, "inv_noexist")
+    fake_id = str(uuid.uuid4())
+
+    resp = await client.get(f"/api/v1/bookings/invites/{fake_id}", headers=_auth(token_a))
+    assert resp.status_code == 404

@@ -1217,3 +1217,175 @@ async def test_get_standings_for_elimination_event(client: AsyncClient, session:
     assert resp.status_code == 200
     standings = resp.json()
     assert isinstance(standings, list)
+
+
+# --- Edge Case: Score submit by non-match-participant ---
+
+@pytest.mark.asyncio
+async def test_submit_score_by_non_participant(client: AsyncClient, session: AsyncSession):
+    """A user not in the match should get 403 when submitting a score."""
+    org_token, _ = await _register_and_get_token(client, "sc_nonp_org", ntrp="4.0")
+    tokens = []
+    for i in range(4):
+        tk, _ = await _register_and_get_token(client, f"sc_nonp_p{i}", ntrp="3.5")
+        tokens.append(tk)
+
+    # Create, publish, join, start
+    resp = await client.post(
+        "/api/v1/events",
+        headers={"Authorization": f"Bearer {org_token}"},
+        json={
+            "name": "NonP Score Cup",
+            "event_type": "singles_elimination",
+            "min_ntrp": "3.0",
+            "max_ntrp": "4.5",
+            "max_participants": 8,
+            "registration_deadline": _future_deadline(),
+        },
+    )
+    event_id = resp.json()["id"]
+    await client.post(f"/api/v1/events/{event_id}/publish", headers={"Authorization": f"Bearer {org_token}"})
+    for tk in tokens:
+        await client.post(f"/api/v1/events/{event_id}/join", headers={"Authorization": f"Bearer {tk}"})
+    await client.post(f"/api/v1/events/{event_id}/start", headers={"Authorization": f"Bearer {org_token}"})
+
+    # Get first round match
+    resp = await client.get(
+        f"/api/v1/events/{event_id}/matches?round=1",
+        headers={"Authorization": f"Bearer {org_token}"},
+    )
+    matches = resp.json()
+    match_with_two_players = next((m for m in matches if m["player_a_id"] and m["player_b_id"]), None)
+    assert match_with_two_players is not None
+    match_id = match_with_two_players["id"]
+
+    # Organizer (who is NOT a player in the match) tries to submit score via POST
+    # (not the PATCH organizer override)
+    resp = await client.post(
+        f"/api/v1/events/matches/{match_id}/score",
+        headers={"Authorization": f"Bearer {org_token}"},
+        json={"sets": [{"set_number": 1, "score_a": 6, "score_b": 4}, {"set_number": 2, "score_a": 6, "score_b": 3}]},
+    )
+    assert resp.status_code == 403
+
+
+# --- Edge Case: Confirm score by the wrong player ---
+
+@pytest.mark.asyncio
+async def test_confirm_score_by_submitter(client: AsyncClient, session: AsyncSession):
+    """The player who submitted the score should not be able to confirm it themselves."""
+    org_token, _ = await _register_and_get_token(client, "sc_conf_org", ntrp="4.0")
+    tokens_and_ids = []
+    for i in range(4):
+        tk, uid = await _register_and_get_token(client, f"sc_conf_p{i}", ntrp="3.5")
+        tokens_and_ids.append((tk, uid))
+
+    resp = await client.post(
+        "/api/v1/events",
+        headers={"Authorization": f"Bearer {org_token}"},
+        json={
+            "name": "Confirm Cup",
+            "event_type": "singles_elimination",
+            "min_ntrp": "3.0",
+            "max_ntrp": "4.5",
+            "max_participants": 8,
+            "registration_deadline": _future_deadline(),
+        },
+    )
+    event_id = resp.json()["id"]
+    await client.post(f"/api/v1/events/{event_id}/publish", headers={"Authorization": f"Bearer {org_token}"})
+    for tk, _ in tokens_and_ids:
+        await client.post(f"/api/v1/events/{event_id}/join", headers={"Authorization": f"Bearer {tk}"})
+    await client.post(f"/api/v1/events/{event_id}/start", headers={"Authorization": f"Bearer {org_token}"})
+
+    # Get a match
+    resp = await client.get(
+        f"/api/v1/events/{event_id}/matches?round=1",
+        headers={"Authorization": f"Bearer {org_token}"},
+    )
+    matches = resp.json()
+    match_with_two = next((m for m in matches if m["player_a_id"] and m["player_b_id"]), None)
+    assert match_with_two is not None
+    match_id = match_with_two["id"]
+    player_a_id = match_with_two["player_a_id"]
+
+    # Find player_a's token
+    player_a_token = next(tk for tk, uid in tokens_and_ids if uid == player_a_id)
+
+    # Player A submits score
+    resp = await client.post(
+        f"/api/v1/events/matches/{match_id}/score",
+        headers={"Authorization": f"Bearer {player_a_token}"},
+        json={"sets": [{"set_number": 1, "score_a": 6, "score_b": 4}, {"set_number": 2, "score_a": 6, "score_b": 3}]},
+    )
+    assert resp.status_code == 200
+
+    # Player A tries to confirm their own submission — should fail
+    resp = await client.post(
+        f"/api/v1/events/matches/{match_id}/confirm",
+        headers={"Authorization": f"Bearer {player_a_token}"},
+    )
+    assert resp.status_code in (400, 403)
+
+
+# --- Edge Case: Non-creator tries to start event ---
+
+@pytest.mark.asyncio
+async def test_non_creator_cannot_start_event(client: AsyncClient, session: AsyncSession):
+    org_token, _ = await _register_and_get_token(client, "start_org", ntrp="3.5")
+    other_token, _ = await _register_and_get_token(client, "start_other", ntrp="3.5")
+
+    resp = await client.post(
+        "/api/v1/events",
+        headers={"Authorization": f"Bearer {org_token}"},
+        json={
+            "name": "Start Auth Cup",
+            "event_type": "singles_elimination",
+            "min_ntrp": "3.0",
+            "max_ntrp": "4.0",
+            "max_participants": 8,
+            "registration_deadline": _future_deadline(),
+        },
+    )
+    event_id = resp.json()["id"]
+    await client.post(f"/api/v1/events/{event_id}/publish", headers={"Authorization": f"Bearer {org_token}"})
+
+    resp = await client.post(f"/api/v1/events/{event_id}/start", headers={"Authorization": f"Bearer {other_token}"})
+    assert resp.status_code == 403
+
+
+# --- Edge Case: Non-creator tries to cancel event ---
+
+@pytest.mark.asyncio
+async def test_non_creator_cannot_cancel_event(client: AsyncClient, session: AsyncSession):
+    org_token, _ = await _register_and_get_token(client, "cancel_org", ntrp="3.5")
+    other_token, _ = await _register_and_get_token(client, "cancel_other", ntrp="3.5")
+
+    resp = await client.post(
+        "/api/v1/events",
+        headers={"Authorization": f"Bearer {org_token}"},
+        json={
+            "name": "Cancel Auth Cup",
+            "event_type": "singles_elimination",
+            "min_ntrp": "3.0",
+            "max_ntrp": "4.0",
+            "max_participants": 8,
+            "registration_deadline": _future_deadline(),
+        },
+    )
+    event_id = resp.json()["id"]
+    await client.post(f"/api/v1/events/{event_id}/publish", headers={"Authorization": f"Bearer {org_token}"})
+
+    resp = await client.post(f"/api/v1/events/{event_id}/cancel", headers={"Authorization": f"Bearer {other_token}"})
+    assert resp.status_code == 403
+
+
+# --- Edge Case: Get nonexistent event ---
+
+@pytest.mark.asyncio
+async def test_get_nonexistent_event(client: AsyncClient, session: AsyncSession):
+    token, _ = await _register_and_get_token(client, "noev")
+    fake_id = str(uuid.uuid4())
+
+    resp = await client.get(f"/api/v1/events/{fake_id}", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 404

@@ -685,3 +685,138 @@ async def test_block_sets_private_room_readonly(client: AsyncClient, session: As
 
     await session.refresh(room)
     assert room.is_readonly is True
+
+
+# --- Edge Case: Send message after being removed from room ---
+
+@pytest.mark.asyncio
+async def test_send_message_after_removal(session: AsyncSession):
+    """A removed participant should not be able to send messages."""
+    from app.services.chat import send_message
+
+    user1 = await _create_user(session, "MsgRemoved1")
+    user2 = await _create_user(session, "MsgRemoved2")
+    court = await _create_court(session)
+    booking = await _create_confirmed_booking(session, user1, user2, court)
+
+    room = await create_chat_room(
+        session,
+        booking=booking,
+        participant_ids=[user1.id, user2.id],
+        court_name=court.name,
+    )
+
+    # Remove user2
+    await remove_participant(session, room_id=room.id, user_id=user2.id)
+    await session.commit()
+
+    # user2 tries to send
+    with pytest.raises(PermissionError):
+        await send_message(
+            session,
+            room_id=room.id,
+            sender_id=user2.id,
+            type="text",
+            content="Should fail",
+        )
+
+
+# --- Edge Case: Message pagination with non-existent cursor ---
+
+@pytest.mark.asyncio
+async def test_message_pagination_bad_cursor(session: AsyncSession):
+    """Using a before_id that doesn't exist should return messages from the start."""
+    from app.services.chat import send_message, get_messages
+
+    user1 = await _create_user(session, "PagBad1")
+    user2 = await _create_user(session, "PagBad2")
+    court = await _create_court(session)
+    booking = await _create_confirmed_booking(session, user1, user2, court)
+
+    room = await create_chat_room(
+        session,
+        booking=booking,
+        participant_ids=[user1.id, user2.id],
+        court_name=court.name,
+    )
+
+    # Send a message
+    await send_message(session, room_id=room.id, sender_id=user1.id, type="text", content="hello")
+    await session.commit()
+
+    # Use a fake before_id — cursor doesn't exist so no filter applied, returns all messages
+    messages = await get_messages(session, room_id=room.id, before_id=uuid.uuid4(), limit=10)
+    assert len(messages) == 1
+
+
+# --- Edge Case: Get messages from room user is not part of ---
+
+@pytest.mark.asyncio
+async def test_get_messages_not_participant(client: AsyncClient, session: AsyncSession):
+    """A non-participant should be denied access to room messages."""
+    token1, token2, uid1, uid2, booking_id, room = await _setup_confirmed_booking_with_room(client, session)
+
+    resp = await client.post(
+        "/api/v1/auth/register/username",
+        params={
+            "nickname": "Outsider",
+            "gender": "male",
+            "city": "Hong Kong",
+            "ntrp_level": "3.5",
+            "language": "en",
+        },
+        json={"username": "chat_outsider", "password": "pass1234", "email": "outsider@test.com"},
+    )
+    outsider_token = resp.json()["access_token"]
+
+    resp = await client.get(
+        f"/api/v1/chat/rooms/{room.id}/messages",
+        headers={"Authorization": f"Bearer {outsider_token}"},
+    )
+    assert resp.status_code == 403
+
+
+# --- Edge Case: Mark read for room user is not part of ---
+
+@pytest.mark.asyncio
+async def test_mark_read_not_participant(client: AsyncClient, session: AsyncSession):
+    """Marking a room as read when not a participant should return 404."""
+    token1, token2, uid1, uid2, booking_id, room = await _setup_confirmed_booking_with_room(client, session)
+
+    resp = await client.post(
+        "/api/v1/auth/register/username",
+        params={
+            "nickname": "ReadOutsider",
+            "gender": "male",
+            "city": "Hong Kong",
+            "ntrp_level": "3.5",
+            "language": "en",
+        },
+        json={"username": "chat_readout", "password": "pass1234", "email": "readout@test.com"},
+    )
+    outsider_token = resp.json()["access_token"]
+
+    resp = await client.post(
+        f"/api/v1/chat/rooms/{room.id}/read",
+        headers={"Authorization": f"Bearer {outsider_token}"},
+    )
+    assert resp.status_code == 404
+
+
+# --- Edge Case: Send message to readonly room via REST ---
+
+@pytest.mark.asyncio
+async def test_send_message_readonly_room_api(client: AsyncClient, session: AsyncSession):
+    """Sending via REST to a readonly room should return 400."""
+    token1, token2, uid1, uid2, booking_id, room = await _setup_confirmed_booking_with_room(client, session)
+
+    # Set room to readonly
+    room.is_readonly = True
+    await session.commit()
+
+    resp = await client.post(
+        f"/api/v1/chat/rooms/{room.id}/messages",
+        headers={"Authorization": f"Bearer {token1}"},
+        json={"type": "text", "content": "should fail"},
+    )
+    assert resp.status_code == 400

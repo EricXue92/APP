@@ -667,3 +667,184 @@ async def test_confirm_creates_chat_room(client: AsyncClient, session: AsyncSess
     room = result.scalar_one_or_none()
     assert room is not None, "Chat room should be created on confirm"
     assert room.is_readonly is False
+
+
+# --- Edge Case: Re-join after cancel ---
+
+@pytest.mark.asyncio
+async def test_rejoin_after_cancel(client: AsyncClient, session: AsyncSession):
+    """A participant who cancelled can re-join the same booking."""
+    token1, _ = await _register_and_get_token(client, "rejoin_host")
+    token2, _ = await _register_and_get_token(client, "rejoin_joiner")
+    court = await _seed_court(session)
+
+    create_resp = await _create_booking(client, token1, str(court.id))
+    booking_id = create_resp.json()["id"]
+
+    # Join, accept, then cancel participation
+    await client.post(f"/api/v1/bookings/{booking_id}/join", headers={"Authorization": f"Bearer {token2}"})
+    joiner_id = (await client.get(f"/api/v1/bookings/{booking_id}")).json()["participants"][1]["user_id"]
+    await client.patch(
+        f"/api/v1/bookings/{booking_id}/participants/{joiner_id}",
+        headers={"Authorization": f"Bearer {token1}"},
+        json={"status": "accepted"},
+    )
+    await client.post(f"/api/v1/bookings/{booking_id}/cancel", headers={"Authorization": f"Bearer {token2}"})
+
+    # Re-join should succeed (status is cancelled, not blocking duplicate check)
+    resp = await client.post(f"/api/v1/bookings/{booking_id}/join", headers={"Authorization": f"Bearer {token2}"})
+    assert resp.status_code == 200
+
+
+# --- Edge Case: Cancel by non-participant ---
+
+@pytest.mark.asyncio
+async def test_cancel_by_non_participant(client: AsyncClient, session: AsyncSession):
+    """A user who never joined tries to cancel — booking status unchanged."""
+    token1, _ = await _register_and_get_token(client, "cancel_host")
+    token2, _ = await _register_and_get_token(client, "cancel_stranger")
+    court = await _seed_court(session)
+
+    create_resp = await _create_booking(client, token1, str(court.id))
+    booking_id = create_resp.json()["id"]
+
+    # Non-participant tries to cancel — should still return 200 but status stays open
+    resp = await client.post(f"/api/v1/bookings/{booking_id}/cancel", headers={"Authorization": f"Bearer {token2}"})
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "open"
+
+
+# --- Edge Case: Confirm already-confirmed booking ---
+
+@pytest.mark.asyncio
+async def test_confirm_already_confirmed(client: AsyncClient, session: AsyncSession):
+    """Confirming an already-confirmed booking returns 400."""
+    token1, _ = await _register_and_get_token(client, "dblconfirm_host")
+    token2, _ = await _register_and_get_token(client, "dblconfirm_joiner")
+    court = await _seed_court(session)
+
+    create_resp = await _create_booking(client, token1, str(court.id))
+    booking_id = create_resp.json()["id"]
+
+    # Join + accept + confirm
+    await client.post(f"/api/v1/bookings/{booking_id}/join", headers={"Authorization": f"Bearer {token2}"})
+    joiner_id = (await client.get(f"/api/v1/bookings/{booking_id}")).json()["participants"][1]["user_id"]
+    await client.patch(
+        f"/api/v1/bookings/{booking_id}/participants/{joiner_id}",
+        headers={"Authorization": f"Bearer {token1}"},
+        json={"status": "accepted"},
+    )
+    resp = await client.post(f"/api/v1/bookings/{booking_id}/confirm", headers={"Authorization": f"Bearer {token1}"})
+    assert resp.status_code == 200
+
+    # Second confirm should fail
+    resp2 = await client.post(f"/api/v1/bookings/{booking_id}/confirm", headers={"Authorization": f"Bearer {token1}"})
+    assert resp2.status_code == 400
+
+
+# --- Edge Case: Complete already-completed booking ---
+
+@pytest.mark.asyncio
+async def test_complete_already_completed(client: AsyncClient, session: AsyncSession):
+    """Completing an already-completed booking returns 400."""
+    from sqlalchemy import update as sa_update
+    from app.models.booking import Booking
+
+    token1, _ = await _register_and_get_token(client, "dblcomplete_host")
+    token2, _ = await _register_and_get_token(client, "dblcomplete_joiner")
+    court = await _seed_court(session)
+
+    create_resp = await _create_booking(client, token1, str(court.id))
+    booking_id = create_resp.json()["id"]
+
+    # Join + accept + confirm
+    await client.post(f"/api/v1/bookings/{booking_id}/join", headers={"Authorization": f"Bearer {token2}"})
+    joiner_id = (await client.get(f"/api/v1/bookings/{booking_id}")).json()["participants"][1]["user_id"]
+    await client.patch(
+        f"/api/v1/bookings/{booking_id}/participants/{joiner_id}",
+        headers={"Authorization": f"Bearer {token1}"},
+        json={"status": "accepted"},
+    )
+    await client.post(f"/api/v1/bookings/{booking_id}/confirm", headers={"Authorization": f"Bearer {token1}"})
+
+    # Set play_date to past
+    await session.execute(
+        sa_update(Booking).where(Booking.id == uuid.UUID(booking_id)).values(play_date=date.today() - timedelta(days=1))
+    )
+    await session.commit()
+
+    # First complete
+    resp = await client.post(f"/api/v1/bookings/{booking_id}/complete", headers={"Authorization": f"Bearer {token1}"})
+    assert resp.status_code == 200
+
+    # Second complete should fail
+    resp2 = await client.post(f"/api/v1/bookings/{booking_id}/complete", headers={"Authorization": f"Bearer {token1}"})
+    assert resp2.status_code == 400
+
+
+# --- Edge Case: Join booking when blocked by creator (reverse direction) ---
+
+@pytest.mark.asyncio
+async def test_join_booking_blocked_reverse(client: AsyncClient, session: AsyncSession):
+    """If the creator blocked the joiner, joining should be rejected."""
+    token1, uid1 = await _register_and_get_token(client, "blkrev_host")
+    token2, uid2 = await _register_and_get_token(client, "blkrev_joiner")
+    court = await _seed_court(session)
+
+    # Creator blocks joiner
+    await client.post(
+        "/api/v1/blocks",
+        json={"blocked_id": uid2},
+        headers={"Authorization": f"Bearer {token1}"},
+    )
+
+    create_resp = await _create_booking(client, token1, str(court.id))
+    booking_id = create_resp.json()["id"]
+
+    # Joiner tries to join — should be blocked
+    resp = await client.post(f"/api/v1/bookings/{booking_id}/join", headers={"Authorization": f"Bearer {token2}"})
+    assert resp.status_code == 403
+
+
+# --- Edge Case: Cancel an already-cancelled booking ---
+
+@pytest.mark.asyncio
+async def test_cancel_already_cancelled_booking(client: AsyncClient, session: AsyncSession):
+    """Cancelling an already-cancelled booking returns 400."""
+    token1, _ = await _register_and_get_token(client, "dblcancel_host")
+    court = await _seed_court(session)
+
+    create_resp = await _create_booking(client, token1, str(court.id))
+    booking_id = create_resp.json()["id"]
+
+    resp = await client.post(f"/api/v1/bookings/{booking_id}/cancel", headers={"Authorization": f"Bearer {token1}"})
+    assert resp.status_code == 200
+
+    resp2 = await client.post(f"/api/v1/bookings/{booking_id}/cancel", headers={"Authorization": f"Bearer {token1}"})
+    assert resp2.status_code == 400
+
+
+# --- Edge Case: Complete non-confirmed booking ---
+
+@pytest.mark.asyncio
+async def test_complete_open_booking_fails(client: AsyncClient, session: AsyncSession):
+    """Completing an open (non-confirmed) booking returns 400."""
+    token1, _ = await _register_and_get_token(client, "complete_open")
+    court = await _seed_court(session)
+
+    create_resp = await _create_booking(client, token1, str(court.id))
+    booking_id = create_resp.json()["id"]
+
+    resp = await client.post(f"/api/v1/bookings/{booking_id}/complete", headers={"Authorization": f"Bearer {token1}"})
+    assert resp.status_code == 400
+
+
+# --- Edge Case: Get nonexistent booking ---
+
+@pytest.mark.asyncio
+async def test_get_nonexistent_booking(client: AsyncClient, session: AsyncSession):
+    token1, _ = await _register_and_get_token(client, "noexist")
+    fake_id = str(uuid.uuid4())
+
+    resp = await client.get(f"/api/v1/bookings/{fake_id}", headers={"Authorization": f"Bearer {token1}"})
+    assert resp.status_code == 404

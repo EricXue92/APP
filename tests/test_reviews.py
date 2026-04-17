@@ -895,3 +895,154 @@ async def test_non_participant_gets_empty_booking_reviews(client: AsyncClient, s
         uuid.UUID(user_id3),
     )
     assert result == [], f"Expected empty list for non-participant, got: {result}"
+
+
+# --- Edge Case: Review at 24h boundary (just barely within window) ---
+
+@pytest.mark.asyncio
+async def test_review_just_inside_24h_window(client: AsyncClient, session: AsyncSession):
+    """Review submitted 23h59m after completion should succeed."""
+    token1, user_id1 = await _register_and_get_token(client, "rev_edge1")
+    token2, user_id2 = await _register_and_get_token(client, "rev_edge2")
+    court = await _seed_court(session)
+
+    booking_id = await _create_completed_booking(client, session, token1, token2, str(court.id))
+
+    # Set updated_at to 23h55m ago (just inside the 24h window)
+    await session.execute(
+        update(Booking)
+        .where(Booking.id == uuid.UUID(booking_id))
+        .values(updated_at=datetime.now(timezone.utc) - timedelta(hours=23, minutes=55))
+    )
+    await session.commit()
+
+    resp = await client.post(
+        "/api/v1/reviews",
+        headers={"Authorization": f"Bearer {token1}"},
+        json={
+            "booking_id": booking_id,
+            "reviewee_id": user_id2,
+            "skill_rating": 4,
+            "punctuality_rating": 5,
+            "sportsmanship_rating": 3,
+        },
+    )
+    assert resp.status_code == 201
+
+
+# --- Edge Case: Review for a nonexistent booking ---
+
+@pytest.mark.asyncio
+async def test_review_nonexistent_booking(client: AsyncClient, session: AsyncSession):
+    token1, user_id1 = await _register_and_get_token(client, "rev_nobook1")
+    token2, user_id2 = await _register_and_get_token(client, "rev_nobook2")
+
+    fake_booking_id = str(uuid.uuid4())
+    resp = await client.post(
+        "/api/v1/reviews",
+        headers={"Authorization": f"Bearer {token1}"},
+        json={
+            "booking_id": fake_booking_id,
+            "reviewee_id": user_id2,
+            "skill_rating": 4,
+            "punctuality_rating": 5,
+            "sportsmanship_rating": 3,
+        },
+    )
+    assert resp.status_code == 400
+
+
+# --- Edge Case: Review by a cancelled participant ---
+
+@pytest.mark.asyncio
+async def test_cancelled_participant_cannot_review(client: AsyncClient, session: AsyncSession):
+    """A participant who was cancelled before completion should not be able to review."""
+    token1, user_id1 = await _register_and_get_token(client, "rev_cancp1")
+    token2, user_id2 = await _register_and_get_token(client, "rev_cancp2")
+    token3, user_id3 = await _register_and_get_token(client, "rev_cancp3")
+    court = await _seed_court(session)
+
+    # Create a doubles booking so we can have 3+ participants
+    resp = await client.post(
+        "/api/v1/bookings",
+        headers={"Authorization": f"Bearer {token1}"},
+        json={
+            "court_id": str(court.id),
+            "match_type": "doubles",
+            "play_date": _future_date(),
+            "start_time": "10:00:00",
+            "end_time": "12:00:00",
+            "min_ntrp": "3.0",
+            "max_ntrp": "4.0",
+            "gender_requirement": "any",
+        },
+    )
+    booking_id = resp.json()["id"]
+
+    # user2 and user3 join
+    await client.post(f"/api/v1/bookings/{booking_id}/join", headers={"Authorization": f"Bearer {token2}"})
+    await client.post(f"/api/v1/bookings/{booking_id}/join", headers={"Authorization": f"Bearer {token3}"})
+
+    # Accept user2 and user3
+    detail = (await client.get(f"/api/v1/bookings/{booking_id}")).json()
+    for p in detail["participants"]:
+        if p["status"] == "pending":
+            await client.patch(
+                f"/api/v1/bookings/{booking_id}/participants/{p['user_id']}",
+                headers={"Authorization": f"Bearer {token1}"},
+                json={"status": "accepted"},
+            )
+
+    # user3 cancels their participation
+    await client.post(f"/api/v1/bookings/{booking_id}/cancel", headers={"Authorization": f"Bearer {token3}"})
+
+    # Confirm and complete
+    await client.post(f"/api/v1/bookings/{booking_id}/confirm", headers={"Authorization": f"Bearer {token1}"})
+    await session.execute(
+        update(Booking).where(Booking.id == uuid.UUID(booking_id)).values(play_date=date.today() - timedelta(days=1))
+    )
+    await session.commit()
+    await client.post(f"/api/v1/bookings/{booking_id}/complete", headers={"Authorization": f"Bearer {token1}"})
+
+    # user3 (cancelled) tries to review user1 — should fail
+    resp = await client.post(
+        "/api/v1/reviews",
+        headers={"Authorization": f"Bearer {token3}"},
+        json={
+            "booking_id": booking_id,
+            "reviewee_id": user_id1,
+            "skill_rating": 4,
+            "punctuality_rating": 5,
+            "sportsmanship_rating": 3,
+        },
+    )
+    assert resp.status_code == 403
+
+
+# --- Edge Case: Review with all minimum ratings ---
+
+@pytest.mark.asyncio
+async def test_review_minimum_ratings(client: AsyncClient, session: AsyncSession):
+    """All ratings at 1 (minimum valid) should work."""
+    token1, user_id1 = await _register_and_get_token(client, "rev_minr1")
+    token2, user_id2 = await _register_and_get_token(client, "rev_minr2")
+    court = await _seed_court(session)
+
+    booking_id = await _create_completed_booking(client, session, token1, token2, str(court.id))
+
+    resp = await client.post(
+        "/api/v1/reviews",
+        headers={"Authorization": f"Bearer {token1}"},
+        json={
+            "booking_id": booking_id,
+            "reviewee_id": user_id2,
+            "skill_rating": 1,
+            "punctuality_rating": 1,
+            "sportsmanship_rating": 1,
+        },
+    )
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["skill_rating"] == 1
+    assert data["punctuality_rating"] == 1
+    assert data["sportsmanship_rating"] == 1
