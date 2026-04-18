@@ -6,6 +6,7 @@ from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.booking import Booking, BookingParticipant, BookingStatus, MatchType, ParticipantStatus
+from app.models.block import Block
 from app.models.court import Court, CourtType
 from app.models.user import User
 from app.models.booking import GenderRequirement
@@ -309,3 +310,58 @@ async def test_calendar_excludes_rejected_participants(client: AsyncClient, sess
     assert resp.status_code == 200
     # User was rejected, so no match dates for them
     assert len(resp.json()["match_dates"]) == 0
+
+
+# --- Block and auth tests ---
+
+
+@pytest.mark.asyncio
+async def test_stats_blocked_user_returns_404(client: AsyncClient, session: AsyncSession):
+    token_a, uid_a = await _register_and_get_token(client, "blocker")
+    _, uid_b = await _register_and_get_token(client, "blocked")
+
+    # Create block: A blocks B
+    block = Block(blocker_id=uuid.UUID(uid_a), blocked_id=uuid.UUID(uid_b))
+    session.add(block)
+    await session.commit()
+
+    # A tries to view B's stats
+    resp = await client.get(
+        f"/api/v1/users/{uid_b}/stats",
+        headers={"Authorization": f"Bearer {token_a}"},
+    )
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_calendar_blocked_user_returns_404(client: AsyncClient, session: AsyncSession):
+    token_a, uid_a = await _register_and_get_token(client, "cal_blocker")
+    _, uid_b = await _register_and_get_token(client, "cal_blocked")
+
+    block = Block(blocker_id=uuid.UUID(uid_a), blocked_id=uuid.UUID(uid_b))
+    session.add(block)
+    await session.commit()
+
+    today = date.today()
+    resp = await client.get(
+        f"/api/v1/users/{uid_b}/calendar",
+        params={"year": today.year, "month": today.month},
+        headers={"Authorization": f"Bearer {token_a}"},
+    )
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_stats_unauthenticated(client: AsyncClient):
+    resp = await client.get(f"/api/v1/users/{uuid.uuid4()}/stats")
+    assert resp.status_code == 422 or resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_calendar_unauthenticated(client: AsyncClient):
+    today = date.today()
+    resp = await client.get(
+        f"/api/v1/users/{uuid.uuid4()}/calendar",
+        params={"year": today.year, "month": today.month},
+    )
+    assert resp.status_code == 422 or resp.status_code == 401
