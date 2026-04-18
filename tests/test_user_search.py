@@ -1,5 +1,5 @@
 import uuid
-from datetime import date, time, timedelta
+from datetime import date, time
 
 import pytest
 from httpx import AsyncClient

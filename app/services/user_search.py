@@ -1,8 +1,6 @@
 import math
 import uuid
-from datetime import date
-
-from sqlalchemy import Float, and_, case, func, or_, select
+from sqlalchemy import Float, case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.block import Block
@@ -130,6 +128,7 @@ async def search_users(
             # Find all courts within radius
             all_courts_result = await session.execute(
                 select(Court.id, Court.latitude, Court.longitude).where(
+                    Court.is_approved == True,
                     Court.latitude.is_not(None),
                     Court.longitude.is_not(None),
                 )
