@@ -50,9 +50,9 @@ LEVEL_GROUPS = [
             },
             {
                 "name": {
-                    "en": "Serve & Return",
-                    "zh-Hant": "發球 & 接發球",
-                    "zh-Hans": "发球 & 接发球",
+                    "en": "Serve/Return",
+                    "zh-Hant": "發球/接發球",
+                    "zh-Hans": "发球/接发球",
                 },
                 "description": {
                     "en": "Can get the ball in play, though double faults are frequent.",
@@ -232,13 +232,9 @@ LEVEL_GROUPS = [
 ]
 
 
-def _resolve_lang(text: dict, lang: str) -> str:
-    """Pick requested language, fallback to zh-Hant then en."""
-    if lang in text:
-        return text[lang]
-    if "zh-Hant" in text:
-        return text["zh-Hant"]
-    return text.get("en", "")
+def _resolve_lang(text: dict[str, str], lang: str) -> str:
+    """Pick the requested language, falling back to zh-Hant then en."""
+    return text.get(lang) or text.get("zh-Hant") or text.get("en", "")
 
 
 def get_level_guide(lang: str) -> list[dict]:
