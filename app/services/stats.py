@@ -1,4 +1,5 @@
 import uuid
+from collections import defaultdict
 from datetime import date
 
 from sqlalchemy import func, select
@@ -120,3 +121,74 @@ async def get_user_stats(session: AsyncSession, user_id: uuid.UUID) -> dict:
         "top_courts": top_courts,
         "top_partners": top_partners,
     }
+
+
+async def get_user_calendar(
+    session: AsyncSession, user_id: uuid.UUID, year: int, month: int
+) -> dict:
+    """Return completed match dates for a user in a given month."""
+    q = (
+        select(
+            Booking.id,
+            Booking.play_date,
+            Booking.match_type,
+            Booking.start_time,
+            Booking.end_time,
+            Court.name.label("court_name"),
+        )
+        .join(BookingParticipant, BookingParticipant.booking_id == Booking.id)
+        .join(Court, Court.id == Booking.court_id)
+        .where(
+            BookingParticipant.user_id == user_id,
+            BookingParticipant.status == ParticipantStatus.ACCEPTED,
+            Booking.status == BookingStatus.COMPLETED,
+            func.extract("year", Booking.play_date) == year,
+            func.extract("month", Booking.play_date) == month,
+        )
+        .order_by(Booking.play_date, Booking.start_time)
+    )
+    rows = (await session.execute(q)).all()
+
+    booking_ids = [row[0] for row in rows]
+
+    participants_by_booking: dict[uuid.UUID, list[dict]] = defaultdict(list)
+    if booking_ids:
+        p_q = (
+            select(
+                BookingParticipant.booking_id,
+                User.id,
+                User.nickname,
+            )
+            .join(User, User.id == BookingParticipant.user_id)
+            .where(
+                BookingParticipant.booking_id.in_(booking_ids),
+                BookingParticipant.status == ParticipantStatus.ACCEPTED,
+                BookingParticipant.user_id != user_id,
+            )
+        )
+        p_rows = (await session.execute(p_q)).all()
+        for p_row in p_rows:
+            participants_by_booking[p_row[0]].append(
+                {"user_id": p_row[1], "nickname": p_row[2]}
+            )
+
+    dates_map: dict[date, list[dict]] = defaultdict(list)
+    for row in rows:
+        booking_id, play_date, match_type, start_time, end_time, court_name = row
+        dates_map[play_date].append(
+            {
+                "booking_id": booking_id,
+                "court_name": court_name,
+                "match_type": match_type.value,
+                "start_time": start_time.strftime("%H:%M"),
+                "end_time": end_time.strftime("%H:%M"),
+                "participants": participants_by_booking.get(booking_id, []),
+            }
+        )
+
+    match_dates = [
+        {"date": d, "bookings": bookings}
+        for d, bookings in sorted(dates_map.items())
+    ]
+
+    return {"year": year, "month": month, "match_dates": match_dates}

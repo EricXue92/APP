@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.booking import Booking, BookingParticipant, BookingStatus, MatchType, ParticipantStatus
 from app.models.court import Court, CourtType
 from app.models.user import User
+from app.models.booking import GenderRequirement
 
 
 async def _register_and_get_token(client: AsyncClient, username: str, ntrp: str = "3.5") -> tuple[str, str]:
@@ -197,3 +198,114 @@ async def test_stats_monthly_matches(client: AsyncClient, session: AsyncSession)
     data = resp.json()
     assert data["total_matches"] == 2
     assert data["monthly_matches"] == 1
+
+
+# --- Calendar endpoint tests ---
+
+
+@pytest.mark.asyncio
+async def test_calendar_correct_dates(client: AsyncClient, session: AsyncSession):
+    token, uid = await _register_and_get_token(client, "cal_user")
+    _, uid_b = await _register_and_get_token(client, "cal_partner")
+    court = await _seed_court(session, "Calendar Court")
+    uids = [uuid.UUID(uid), uuid.UUID(uid_b)]
+    today = date.today()
+
+    await _seed_completed_booking(session, court, uids, play_date=today)
+
+    resp = await client.get(
+        f"/api/v1/users/{uid}/calendar",
+        params={"year": today.year, "month": today.month},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["year"] == today.year
+    assert data["month"] == today.month
+    assert len(data["match_dates"]) == 1
+    match_date = data["match_dates"][0]
+    assert match_date["date"] == today.isoformat()
+    assert len(match_date["bookings"]) == 1
+    booking = match_date["bookings"][0]
+    assert booking["court_name"] == "Calendar Court"
+    assert booking["match_type"] == "singles"
+    # Participants should exclude the target user
+    participant_ids = [p["user_id"] for p in booking["participants"]]
+    assert uid not in participant_ids
+    assert uid_b in participant_ids
+
+
+@pytest.mark.asyncio
+async def test_calendar_excludes_non_completed(client: AsyncClient, session: AsyncSession):
+    token, uid = await _register_and_get_token(client, "noncomplete")
+    _, uid_b = await _register_and_get_token(client, "noncomplete_b")
+    court = await _seed_court(session)
+    today = date.today()
+
+    # Create an open (not completed) booking
+    booking = Booking(
+        creator_id=uuid.UUID(uid),
+        court_id=court.id,
+        match_type=MatchType.SINGLES,
+        play_date=today,
+        start_time=time(10, 0),
+        end_time=time(12, 0),
+        min_ntrp="3.0",
+        max_ntrp="4.0",
+        max_participants=2,
+        status=BookingStatus.OPEN,
+    )
+    session.add(booking)
+    await session.flush()
+    session.add(BookingParticipant(
+        booking_id=booking.id, user_id=uuid.UUID(uid), status=ParticipantStatus.ACCEPTED
+    ))
+    await session.commit()
+
+    resp = await client.get(
+        f"/api/v1/users/{uid}/calendar",
+        params={"year": today.year, "month": today.month},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200
+    assert len(resp.json()["match_dates"]) == 0
+
+
+@pytest.mark.asyncio
+async def test_calendar_excludes_rejected_participants(client: AsyncClient, session: AsyncSession):
+    token, uid = await _register_and_get_token(client, "rejected_user")
+    _, uid_b = await _register_and_get_token(client, "rejected_b")
+    court = await _seed_court(session)
+    today = date.today()
+
+    # Create a completed booking where user was rejected
+    booking = Booking(
+        creator_id=uuid.UUID(uid_b),
+        court_id=court.id,
+        match_type=MatchType.SINGLES,
+        play_date=today,
+        start_time=time(10, 0),
+        end_time=time(12, 0),
+        min_ntrp="3.0",
+        max_ntrp="4.0",
+        max_participants=2,
+        status=BookingStatus.COMPLETED,
+    )
+    session.add(booking)
+    await session.flush()
+    session.add(BookingParticipant(
+        booking_id=booking.id, user_id=uuid.UUID(uid), status=ParticipantStatus.REJECTED
+    ))
+    session.add(BookingParticipant(
+        booking_id=booking.id, user_id=uuid.UUID(uid_b), status=ParticipantStatus.ACCEPTED
+    ))
+    await session.commit()
+
+    resp = await client.get(
+        f"/api/v1/users/{uid}/calendar",
+        params={"year": today.year, "month": today.month},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200
+    # User was rejected, so no match dates for them
+    assert len(resp.json()["match_dates"]) == 0
