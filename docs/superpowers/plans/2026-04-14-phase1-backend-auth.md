@@ -56,6 +56,7 @@ pyproject.toml
 ### Task 1: Project Setup & Dependencies
 
 **Files:**
+
 - Modify: `pyproject.toml`
 - Create: `.env.example`
 - Create: `app/__init__.py`
@@ -131,7 +132,7 @@ class Settings(BaseSettings):
 settings = Settings()
 ```
 
-- [ ] **Step 4: Create app/__init__.py**
+- [ ] **Step 4: Create app/**init**.py**
 
 ```python
 # Let's Tennis Backend
@@ -154,6 +155,7 @@ git commit -m "feat: project setup with FastAPI dependencies and config"
 ### Task 2: Database Connection & Base Models
 
 **Files:**
+
 - Create: `app/database.py`
 - Create: `app/models/__init__.py`
 - Create: `app/models/user.py`
@@ -180,7 +182,7 @@ async def get_session() -> AsyncSession:
         yield session
 ```
 
-- [ ] **Step 2: Create app/models/__init__.py**
+- [ ] **Step 2: Create app/models/**init**.py**
 
 ```python
 from app.models.user import User, UserAuth
@@ -315,6 +317,7 @@ git commit -m "feat: database connection and User, UserAuth, CreditLog models"
 ### Task 3: Alembic Setup & Initial Migration
 
 **Files:**
+
 - Create: `alembic.ini`
 - Create: `alembic/env.py`
 - Create: `alembic/versions/` (auto-generated)
@@ -409,6 +412,7 @@ cd /Users/xue/APP && uv run alembic revision --autogenerate -m "initial tables: 
 - [ ] **Step 6: Review the generated migration**
 
 Open and review the file in `alembic/versions/`. Verify it creates:
+
 - `users` table with all columns
 - `user_auths` table with unique constraint on `(provider, provider_user_id)`
 - `credit_logs` table
@@ -453,6 +457,7 @@ git commit -m "feat: Alembic setup with initial migration for users, auth, credi
 ### Task 4: Redis Connection & i18n Helper
 
 **Files:**
+
 - Create: `app/redis.py`
 - Create: `app/i18n.py`
 - Create: `tests/__init__.py`
@@ -539,8 +544,8 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "This account is already linked",
     },
     "user.credit_too_low": {
-        "zh-Hans": "信用分不足",
-        "zh-Hant": "信用分不足",
+        "zh-Hans": "信誉积分不足",
+        "zh-Hant": "信誉积分不足",
         "en": "Credit score too low",
     },
     "common.not_found": {
@@ -580,11 +585,12 @@ git commit -m "feat: Redis connection and i18n translation helper with tests"
 ### Task 5: Pydantic Schemas
 
 **Files:**
+
 - Create: `app/schemas/__init__.py`
 - Create: `app/schemas/auth.py`
 - Create: `app/schemas/user.py`
 
-- [ ] **Step 1: Create app/schemas/__init__.py**
+- [ ] **Step 1: Create app/schemas/**init**.py**
 
 ```python
 # Pydantic schemas
@@ -701,6 +707,7 @@ git commit -m "feat: Pydantic schemas for auth and user endpoints"
 ### Task 6: Auth Service (JWT + Password Hashing)
 
 **Files:**
+
 - Create: `app/services/__init__.py`
 - Create: `app/services/auth.py`
 - Create: `tests/test_auth_service.py`
@@ -748,7 +755,7 @@ def test_decode_invalid_token():
 Run: `cd /Users/xue/APP && uv run pytest tests/test_auth_service.py -v`
 Expected: FAIL (module not found)
 
-- [ ] **Step 3: Create app/services/__init__.py**
+- [ ] **Step 3: Create app/services/**init**.py**
 
 ```python
 # Business logic services
@@ -831,6 +838,7 @@ git commit -m "feat: auth service with JWT tokens and password hashing"
 ### Task 7: User Service (CRUD)
 
 **Files:**
+
 - Create: `app/services/user.py`
 
 - [ ] **Step 1: Create app/services/user.py**
@@ -926,6 +934,7 @@ git commit -m "feat: user service with CRUD operations"
 ### Task 8: FastAPI Dependencies & App Factory
 
 **Files:**
+
 - Create: `app/dependencies.py`
 - Modify: `app/main.py` (replace the old `main.py` content)
 - Delete: `main.py` (old placeholder)
@@ -1038,12 +1047,13 @@ git commit -m "feat: FastAPI app factory with dependencies and auth middleware"
 ### Task 9: Auth Router (Register + Login Endpoints)
 
 **Files:**
+
 - Create: `app/routers/__init__.py`
 - Create: `app/routers/auth.py`
 - Create: `tests/conftest.py`
 - Create: `tests/test_auth.py`
 
-- [ ] **Step 1: Create app/routers/__init__.py**
+- [ ] **Step 1: Create app/routers/**init**.py**
 
 ```python
 # API routers
@@ -1376,6 +1386,7 @@ git commit -m "feat: auth router with username register/login, phone login, toke
 ### Task 10: User Profile Router
 
 **Files:**
+
 - Create: `app/routers/users.py`
 - Create: `tests/test_users.py`
 
@@ -1495,6 +1506,7 @@ git commit -m "feat: user profile endpoints (GET /me, PATCH /me) with tests"
 ### Task 11: Credit Score Service
 
 **Files:**
+
 - Create: `app/services/credit.py`
 - Create: `tests/test_credit.py`
 
@@ -1693,6 +1705,7 @@ git commit -m "feat: credit score service with first-cancel warning and bounded 
 ### Task 12: Final Verification & Cleanup
 
 **Files:**
+
 - Modify: `.gitignore`
 
 - [ ] **Step 1: Update .gitignore**

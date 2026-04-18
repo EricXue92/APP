@@ -30,8 +30,8 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "This account is already linked",
     },
     "user.credit_too_low": {
-        "zh-Hans": "信用分不足",
-        "zh-Hant": "信用分不足",
+        "zh-Hans": "信誉积分不足",
+        "zh-Hant": "信譽積分不足",
         "en": "Credit score too low",
     },
     "common.not_found": {
@@ -75,8 +75,8 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "This booking has a gender requirement you don't meet",
     },
     "booking.credit_too_low": {
-        "zh-Hans": "信用分不足，无法发起约球",
-        "zh-Hant": "信用分不足，無法發起約球",
+        "zh-Hans": "信誉积分不足，无法发起约球",
+        "zh-Hant": "信譽積分不足，無法發起約球",
         "en": "Credit score too low to create a booking",
     },
     "booking.not_creator": {
@@ -385,8 +385,8 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "Only the event organizer can perform this action",
     },
     "event.credit_too_low": {
-        "zh-Hans": "信用分不足，无法创建赛事",
-        "zh-Hant": "信用分不足，無法創建賽事",
+        "zh-Hans": "信誉积分不足，无法创建赛事",
+        "zh-Hant": "信譽積分不足，無法創建賽事",
         "en": "Credit score too low to create an event",
     },
     "event.not_open": {

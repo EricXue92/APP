@@ -45,6 +45,7 @@ alembic/
 ### Task 1: Court Model
 
 **Files:**
+
 - Create: `app/models/court.py`
 
 - [ ] **Step 1: Create app/models/court.py**
@@ -105,6 +106,7 @@ git commit -m "feat: Court model with CourtType and SurfaceType enums"
 ### Task 2: Booking + BookingParticipant Models
 
 **Files:**
+
 - Create: `app/models/booking.py`
 
 - [ ] **Step 1: Create app/models/booking.py**
@@ -207,10 +209,11 @@ git commit -m "feat: Booking and BookingParticipant models with status enums"
 ### Task 3: Update Models Init + Conftest + Migration
 
 **Files:**
+
 - Modify: `app/models/__init__.py`
 - Modify: `tests/conftest.py`
 
-- [ ] **Step 1: Update app/models/__init__.py**
+- [ ] **Step 1: Update app/models/**init**.py**
 
 Replace the entire content with:
 
@@ -244,6 +247,7 @@ Run: `cd /Users/xue/APP && uv run alembic revision --autogenerate -m "add courts
 - [ ] **Step 4: Review the generated migration**
 
 Open and review the file in `alembic/versions/`. Verify it creates:
+
 - `courts` table with all columns
 - `bookings` table with all columns and foreign keys to `users` and `courts`
 - `booking_participants` table with unique constraint on `(booking_id, user_id)`
@@ -278,6 +282,7 @@ git commit -m "feat: Alembic migration for courts, bookings, booking_participant
 ### Task 4: i18n — Add Booking & Court Translation Keys
 
 **Files:**
+
 - Modify: `app/i18n.py`
 
 - [ ] **Step 1: Add new translation keys to app/i18n.py**
@@ -316,8 +321,8 @@ Add the following entries to the `_MESSAGES` dict in `app/i18n.py`, after the ex
         "en": "This booking has a gender requirement you don't meet",
     },
     "booking.credit_too_low": {
-        "zh-Hans": "信用分不足，无法发起约球",
-        "zh-Hant": "信用分不足，無法發起約球",
+        "zh-Hans": "信誉积分不足，无法发起约球",
+        "zh-Hant": "信誉积分不足，無法發起約球",
         "en": "Credit score too low to create a booking",
     },
     "booking.not_creator": {
@@ -361,6 +366,7 @@ Add the following entries to the `_MESSAGES` dict in `app/i18n.py`, after the ex
 
 Run: `cd /Users/xue/APP && uv run python -c "from app.i18n import t; print(t('booking.not_found', 'zh-Hant')); print(t('court.not_found', 'en'))"`
 Expected:
+
 ```
 約球未找到
 Court not found
@@ -378,6 +384,7 @@ git commit -m "feat: i18n translations for booking and court error messages"
 ### Task 5: Court Schemas
 
 **Files:**
+
 - Create: `app/schemas/court.py`
 
 - [ ] **Step 1: Create app/schemas/court.py**
@@ -431,6 +438,7 @@ git commit -m "feat: Pydantic schemas for court endpoints"
 ### Task 6: Booking Schemas
 
 **Files:**
+
 - Create: `app/schemas/booking.py`
 
 - [ ] **Step 1: Create app/schemas/booking.py**
@@ -511,6 +519,7 @@ git commit -m "feat: Pydantic schemas for booking endpoints"
 ### Task 7: Court Service
 
 **Files:**
+
 - Create: `app/services/court.py`
 
 - [ ] **Step 1: Create app/services/court.py**
@@ -595,6 +604,7 @@ git commit -m "feat: court service with CRUD operations"
 ### Task 8: Court Router + Tests
 
 **Files:**
+
 - Create: `app/routers/courts.py`
 - Create: `tests/test_courts.py`
 
@@ -814,6 +824,7 @@ git commit -m "feat: court router with list, get, submit endpoints and tests"
 ### Task 9: Booking Service
 
 **Files:**
+
 - Create: `app/services/booking.py`
 
 - [ ] **Step 1: Create app/services/booking.py**
@@ -1049,6 +1060,7 @@ git commit -m "feat: booking service with create, join, cancel, complete, confir
 ### Task 10: Booking Router
 
 **Files:**
+
 - Create: `app/routers/bookings.py`
 
 - [ ] **Step 1: Create app/routers/bookings.py**
@@ -1317,6 +1329,7 @@ git commit -m "feat: booking router with create, join, confirm, cancel, complete
 ### Task 11: Register New Routers in App Factory
 
 **Files:**
+
 - Modify: `app/main.py`
 
 - [ ] **Step 1: Update app/main.py**
@@ -1358,6 +1371,7 @@ git commit -m "feat: register courts and bookings routers in app factory"
 ### Task 12: Booking Tests
 
 **Files:**
+
 - Create: `tests/test_bookings.py`
 
 - [ ] **Step 1: Create tests/test_bookings.py**
