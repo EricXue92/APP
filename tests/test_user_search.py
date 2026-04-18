@@ -237,3 +237,182 @@ async def test_search_ideal_only(client: AsyncClient, session: AsyncSession):
     data = resp.json()
     assert data["total"] == 1
     assert data["users"][0]["nickname"] == "Player_ideal_yes"
+
+
+# --- Court proximity tests ---
+
+
+@pytest.mark.asyncio
+async def test_search_court_proximity_booking_history(client: AsyncClient, session: AsyncSession):
+    """Court filter returns users who played at nearby courts."""
+    court = await _seed_court(session, "Central Court", lat=22.28, lng=114.15)
+    token_a, id_a = await _register(client, "court_searcher")
+    _, id_b = await _register(client, "court_player")
+    _, _ = await _register(client, "court_noplay")
+
+    await _seed_completed_booking(session, court, [uuid.UUID(id_a), uuid.UUID(id_b)])
+
+    resp = await client.get(
+        "/api/v1/users/search",
+        params={"court_id": str(court.id), "radius_km": "10"},
+        headers=_auth(token_a),
+    )
+    data = resp.json()
+    nicknames = [u["nickname"] for u in data["users"]]
+    assert "Player_court_player" in nicknames
+    assert "Player_court_noplay" not in nicknames
+
+
+@pytest.mark.asyncio
+async def test_search_court_proximity_respects_radius(client: AsyncClient, session: AsyncSession):
+    """Users at courts beyond radius are excluded."""
+    # Two courts ~100km apart
+    court_near = await _seed_court(session, "Near Court", lat=22.28, lng=114.15)
+    court_far = await _seed_court(session, "Far Court", lat=23.28, lng=114.15)
+
+    token_a, id_a = await _register(client, "radius_searcher")
+    _, id_near = await _register(client, "radius_near")
+    _, id_far = await _register(client, "radius_far")
+
+    await _seed_completed_booking(session, court_near, [uuid.UUID(id_a), uuid.UUID(id_near)])
+    await _seed_completed_booking(session, court_far, [uuid.UUID(id_a), uuid.UUID(id_far)])
+
+    resp = await client.get(
+        "/api/v1/users/search",
+        params={"court_id": str(court_near.id), "radius_km": "5"},
+        headers=_auth(token_a),
+    )
+    data = resp.json()
+    nicknames = [u["nickname"] for u in data["users"]]
+    assert "Player_radius_near" in nicknames
+    assert "Player_radius_far" not in nicknames
+
+
+@pytest.mark.asyncio
+async def test_search_court_includes_preferences(client: AsyncClient, session: AsyncSession):
+    """Court filter includes users with matching match preferences."""
+    from app.models.matching import MatchPreference, MatchPreferenceCourt
+
+    court = await _seed_court(session, "Pref Court", lat=22.28, lng=114.15)
+    token_a, _ = await _register(client, "pref_searcher")
+    _, id_b = await _register(client, "pref_user")
+
+    # Add match preference with this court
+    pref = MatchPreference(
+        user_id=uuid.UUID(id_b),
+        min_ntrp="3.0",
+        max_ntrp="4.0",
+    )
+    session.add(pref)
+    await session.flush()
+    session.add(MatchPreferenceCourt(preference_id=pref.id, court_id=court.id))
+    await session.commit()
+
+    resp = await client.get(
+        "/api/v1/users/search",
+        params={"court_id": str(court.id), "radius_km": "10"},
+        headers=_auth(token_a),
+    )
+    data = resp.json()
+    nicknames = [u["nickname"] for u in data["users"]]
+    assert "Player_pref_user" in nicknames
+
+
+# --- Sort order and following tests ---
+
+
+@pytest.mark.asyncio
+async def test_search_sort_ideal_first(client: AsyncClient, session: AsyncSession):
+    """Ideal players appear before non-ideal players."""
+    token_a, _ = await _register(client, "sort_searcher")
+    _, id_normal = await _register(client, "sort_normal")
+    _, id_ideal = await _register(client, "sort_ideal")
+
+    user_ideal = await session.get(User, uuid.UUID(id_ideal))
+    user_ideal.is_ideal_player = True
+    await session.commit()
+
+    resp = await client.get("/api/v1/users/search", headers=_auth(token_a))
+    users = resp.json()["users"]
+    ideal_idx = next(i for i, u in enumerate(users) if u["nickname"] == "Player_sort_ideal")
+    normal_idx = next(i for i, u in enumerate(users) if u["nickname"] == "Player_sort_normal")
+    assert ideal_idx < normal_idx
+
+
+@pytest.mark.asyncio
+async def test_search_is_following_field(client: AsyncClient, session: AsyncSession):
+    """is_following reflects whether the caller follows each user."""
+    token_a, id_a = await _register(client, "follow_searcher")
+    _, id_followed = await _register(client, "follow_yes")
+    _, id_not_followed = await _register(client, "follow_no")
+
+    session.add(Follow(follower_id=uuid.UUID(id_a), followed_id=uuid.UUID(id_followed)))
+    await session.commit()
+
+    resp = await client.get("/api/v1/users/search", headers=_auth(token_a))
+    users = {u["nickname"]: u for u in resp.json()["users"]}
+    assert users["Player_follow_yes"]["is_following"] is True
+    assert users["Player_follow_no"]["is_following"] is False
+
+
+@pytest.mark.asyncio
+async def test_search_pagination(client: AsyncClient, session: AsyncSession):
+    """Pagination returns correct page and total."""
+    token_a, _ = await _register(client, "page_searcher")
+    for i in range(5):
+        await _register(client, f"page_user_{i}")
+
+    resp = await client.get(
+        "/api/v1/users/search",
+        params={"page": "1", "page_size": "2"},
+        headers=_auth(token_a),
+    )
+    data = resp.json()
+    assert len(data["users"]) == 2
+    assert data["total"] == 5
+    assert data["page"] == 1
+    assert data["page_size"] == 2
+
+    resp2 = await client.get(
+        "/api/v1/users/search",
+        params={"page": "3", "page_size": "2"},
+        headers=_auth(token_a),
+    )
+    data2 = resp2.json()
+    assert len(data2["users"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_search_no_filters_returns_all_eligible(client: AsyncClient, session: AsyncSession):
+    """No filters returns all active, non-suspended, non-blocked users."""
+    token_a, _ = await _register(client, "all_searcher")
+    _, _ = await _register(client, "all_user_1")
+    _, _ = await _register(client, "all_user_2")
+
+    resp = await client.get("/api/v1/users/search", headers=_auth(token_a))
+    data = resp.json()
+    assert data["total"] == 2
+
+
+@pytest.mark.asyncio
+async def test_search_last_active_at_from_booking(client: AsyncClient, session: AsyncSession):
+    """last_active_at reflects the most recent completed booking date."""
+    court = await _seed_court(session, "Active Court")
+    token_a, id_a = await _register(client, "active_searcher")
+    _, id_b = await _register(client, "active_player")
+
+    play_date = date(2026, 4, 10)
+    await _seed_completed_booking(
+        session, court, [uuid.UUID(id_a), uuid.UUID(id_b)], play_date=play_date,
+    )
+
+    resp = await client.get("/api/v1/users/search", headers=_auth(token_a))
+    user_b = next(u for u in resp.json()["users"] if u["nickname"] == "Player_active_player")
+    assert user_b["last_active_at"] == "2026-04-10"
+
+
+@pytest.mark.asyncio
+async def test_search_requires_auth(client: AsyncClient, session: AsyncSession):
+    """Search endpoint requires authentication."""
+    resp = await client.get("/api/v1/users/search")
+    assert resp.status_code == 422 or resp.status_code == 401
