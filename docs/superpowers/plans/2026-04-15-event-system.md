@@ -13,6 +13,7 @@
 ### Task 1: Event Models + Enums
 
 **Files:**
+
 - Create: `app/models/event.py`
 
 - [ ] **Step 1: Create event models file**
@@ -163,6 +164,7 @@ git commit -m "feat(event): add Event, EventParticipant, EventMatch, EventSet mo
 ### Task 2: Modify Existing Models (Notification + Chat)
 
 **Files:**
+
 - Modify: `app/models/notification.py`
 - Modify: `app/models/chat.py`
 - Modify: `app/models/__init__.py`
@@ -195,9 +197,9 @@ In `app/models/chat.py`, add after the `booking_id` column in `ChatRoom`:
     )
 ```
 
-- [ ] **Step 3: Update models __init__.py**
+- [ ] **Step 3: Update models **init**.py**
 
-In `app/models/__init__.py`, add the import and __all__ entries:
+In `app/models/__init__.py`, add the import and **all** entries:
 
 ```python
 from app.models.event import Event, EventParticipant, EventMatch, EventSet
@@ -227,6 +229,7 @@ git commit -m "feat(event): add notification types, ChatRoom.event_id, model exp
 ### Task 3: Alembic Migration
 
 **Files:**
+
 - Create: Alembic migration file (auto-generated)
 
 - [ ] **Step 1: Generate migration**
@@ -238,6 +241,7 @@ uv run alembic revision --autogenerate -m "add event system tables"
 - [ ] **Step 2: Review the generated migration**
 
 Open the generated file and verify it creates:
+
 - `events` table
 - `event_participants` table with unique constraint
 - `event_matches` table
@@ -263,6 +267,7 @@ git commit -m "feat(event): add event system migration"
 ### Task 4: i18n Messages
 
 **Files:**
+
 - Modify: `app/i18n.py`
 
 - [ ] **Step 1: Add event i18n messages**
@@ -281,8 +286,8 @@ Add these entries to `_MESSAGES` dict in `app/i18n.py`:
         "en": "Only the event organizer can perform this action",
     },
     "event.credit_too_low": {
-        "zh-Hans": "信用分不足，无法创建赛事",
-        "zh-Hant": "信用分不足，無法創建賽事",
+        "zh-Hans": "信誉积分不足，无法创建赛事",
+        "zh-Hant": "信誉积分不足，無法創建賽事",
         "en": "Credit score too low to create an event",
     },
     "event.not_open": {
@@ -400,6 +405,7 @@ git commit -m "feat(event): add i18n messages for event system"
 ### Task 5: Event Schemas
 
 **Files:**
+
 - Create: `app/schemas/event.py`
 
 - [ ] **Step 1: Create event schemas**
@@ -554,6 +560,7 @@ git commit -m "feat(event): add request/response schemas"
 ### Task 6: Chat Service — Event Room Helper
 
 **Files:**
+
 - Modify: `app/services/chat.py`
 
 - [ ] **Step 1: Write the failing test**
@@ -704,6 +711,7 @@ git commit -m "feat(event): add create_event_chat_room and helpers"
 ### Task 7: Event Service — Create, Get, List
 
 **Files:**
+
 - Create: `app/services/event.py`
 - Modify: `tests/test_events.py`
 
@@ -1161,6 +1169,7 @@ git commit -m "feat(event): add event CRUD service, router, and tests"
 ### Task 8: Publish + Registration (Join/Withdraw/Remove)
 
 **Files:**
+
 - Modify: `app/services/event.py`
 - Modify: `app/routers/events.py`
 - Modify: `tests/test_events.py`
@@ -1500,6 +1509,7 @@ git commit -m "feat(event): add publish, join, withdraw, remove participant"
 ### Task 9: Start Event + Seeding + Elimination Draw
 
 **Files:**
+
 - Modify: `app/services/event.py`
 - Modify: `app/routers/events.py`
 - Modify: `tests/test_events.py`
@@ -1899,6 +1909,7 @@ git commit -m "feat(event): add start event with seeding and elimination draw"
 ### Task 10: Round-Robin Draw Generation
 
 **Files:**
+
 - Modify: `app/services/event.py`
 - Modify: `tests/test_events.py`
 
@@ -2054,6 +2065,7 @@ git commit -m "feat(event): add round-robin draw generation with snake grouping"
 ### Task 11: Score Submission + Validation
 
 **Files:**
+
 - Modify: `app/services/event.py`
 - Modify: `app/routers/events.py`
 - Modify: `tests/test_events.py`
@@ -2400,6 +2412,7 @@ git commit -m "feat(event): add score submission with validation"
 ### Task 12: Score Confirmation + Dispute + Auto-Advance
 
 **Files:**
+
 - Modify: `app/services/event.py`
 - Modify: `app/routers/events.py`
 - Modify: `tests/test_events.py`
@@ -2777,6 +2790,7 @@ git commit -m "feat(event): add score confirmation, dispute, and auto-advance"
 ### Task 13: Walkover + Organizer Score Override
 
 **Files:**
+
 - Modify: `app/services/event.py`
 - Modify: `app/routers/events.py`
 - Modify: `tests/test_events.py`
@@ -3126,6 +3140,7 @@ git commit -m "feat(event): add walkover, organizer score override"
 ### Task 14: Bracket + Standings Endpoints
 
 **Files:**
+
 - Modify: `app/services/event.py`
 - Modify: `app/routers/events.py`
 - Modify: `tests/test_events.py`
@@ -3376,6 +3391,7 @@ git commit -m "feat(event): add bracket and standings endpoints"
 ### Task 15: Cancel Event + Update conftest
 
 **Files:**
+
 - Modify: `app/services/event.py`
 - Modify: `app/routers/events.py`
 - Modify: `tests/test_events.py`
@@ -3500,6 +3516,7 @@ git commit -m "feat(event): add cancel event, update conftest with event models"
 ### Task 16: Update CLAUDE.md + Full Test Suite
 
 **Files:**
+
 - Modify: `CLAUDE.md`
 - Modify: `tests/test_events.py`
 
